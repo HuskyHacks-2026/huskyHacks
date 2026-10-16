@@ -1,0 +1,3 @@
+# huskyHacks
+
+Hackathon project repo.
