@@ -1,12 +1,11 @@
 /**
- * Narrated demo runner. Replays locked scenarios against a LIVE backend and prints every step with its actor.
+ * Narrated demo runner against a LIVE backend.
  *
- *   cd backend && npm start                 # in one shell
- *   cd demos && npm run demo                # all scenarios
- *   npm run demo -- mexico-vacation         # one or more ids
- *   npm run demo -- --group phish           # happy | bad | phish | audit
- *   npm run demo -- --events                # also print the vault's audit feed after each scenario
- *   API=http://host:port npm run demo       # non-default server
+ *   cd backend && npm start
+ *   cd demos && npm run demo
+ *   npm run demo -- mexico-vacation groceries-plus-tv --events
+ *   npm run demo -- --group phish
+ *   API=http://localhost:8787/api npm run demo
  */
 import { VaultClient } from './client'
 import { runScenario, type Actor, type StepResult } from './runner'
@@ -18,7 +17,7 @@ const groupArg = args[args.indexOf('--group') + 1] as Group | undefined
 const wantGroup = args.includes('--group') ? groupArg : undefined
 const ids = args.filter(a => !a.startsWith('--') && a !== wantGroup)
 
-const base = process.env.API ?? 'http://localhost:8787'
+const base = process.env.API ?? 'http://localhost:8787/api'
 const color = !process.env.NO_COLOR && process.stdout.isTTY
 const c = (code: string, s: string) => (color ? `\x1b[${code}m${s}\x1b[0m` : s)
 const bold = (s: string) => c('1', s)

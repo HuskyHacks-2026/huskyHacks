@@ -23,13 +23,13 @@ npm test
 
 # narrated demo against a live server
 cd ../backend && npm start            # http://localhost:8787
-cd ../demos && npm run demo           # all 13 scenarios
+cd ../demos && npm run demo           # all 13 scenarios (API default …/api)
 npm run demo -- mexico-vacation groceries-plus-tv
 npm run demo -- --group phish         # happy | bad | phish | audit
 npm run demo -- --events              # also print the member-side audit feed
 
 # same tests against the live server
-npm run test:live                     # or API=http://host:port npm test
+npm run test:live                     # or API=http://localhost:8787/api npm test
 ```
 
 Exit code is non-zero if any expectation fails or any secret reaches the agent surface.

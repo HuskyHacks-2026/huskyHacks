@@ -36,11 +36,12 @@ describe('leak-scan secrets mirror the backend demo member', () => {
   it('secrets.ts matches backend/src/data.ts', () => {
     const m = demoMember()
     expect(DEMO_MEMBER_SECRETS).toEqual({
-      memberId: m.id,
-      name: m.name,
-      accountNumber: m.realAccount.accountNumber,
-      routingNumber: m.realAccount.routingNumber,
-      openingBalanceCents: m.realAccount.balanceCents,
+      memberId: m.memberId,
+      firstName: m.firstName,
+      checkingNumber: m.accounts[0]!.number,
+      savingsNumber: m.accounts[1]!.number,
+      routingNumber: m.accounts[0]!.routing,
+      checkingOpeningBalanceCents: m.accounts[0]!.balanceCents,
     })
   })
 })

@@ -1,32 +1,34 @@
 /**
- * The demo member's real-account data. Mirrors `backend/src/data.ts` (demoMember) so the
- * live-server demo can scan for leaks without importing backend code. A test keeps the two in sync.
- *
- * None of these values, and none of the FORBIDDEN_KEYS, may ever appear in an agent-facing response.
+ * Demo member secrets. Mirrors `backend/src/data.ts` (demoMember) so leak scans stay honest without
+ * importing secrets into agent-facing payloads. A test keeps the two in sync.
  */
 export const DEMO_MEMBER_SECRETS = {
-  memberId: 'm_alex',
-  name: 'Alex Rivera',
-  accountNumber: '8675309214',
+  memberId: 'SCU-0042-118',
+  firstName: 'Jordan',
+  checkingNumber: '7700384821',
+  savingsNumber: '7700380093',
   routingNumber: '325081403',
-  openingBalanceCents: 482055,
+  checkingOpeningBalanceCents: 421256,
 }
 
 export const SECRET_VALUES: string[] = [
   DEMO_MEMBER_SECRETS.memberId,
-  DEMO_MEMBER_SECRETS.name,
-  ...DEMO_MEMBER_SECRETS.name.split(' '),
-  DEMO_MEMBER_SECRETS.accountNumber,
+  DEMO_MEMBER_SECRETS.firstName,
+  DEMO_MEMBER_SECRETS.checkingNumber,
+  DEMO_MEMBER_SECRETS.savingsNumber,
   DEMO_MEMBER_SECRETS.routingNumber,
-  String(DEMO_MEMBER_SECRETS.openingBalanceCents),
-  '4820.55',
-  '4,820.55',
+  String(DEMO_MEMBER_SECRETS.checkingOpeningBalanceCents),
+  '4212.56',
+  '4,212.56',
 ]
 
-/** JSON keys that belong only on the member/vault surface. Structural check, independent of values. */
+/**
+ * JSON keys that belong only on the member surface.
+ * Note: VirtualCard.balanceCents (remaining fake money) is allowed on the agent surface —
+ * do not list `balanceCents` here.
+ */
 export const FORBIDDEN_AGENT_KEYS = [
-  'accountNumber', 'routingNumber', 'realAccount', 'accountLast4', 'balanceCents',
-  'member', 'memberId', 'history', 'historyCount', 'heldCents', 'detail', 'pendingOverride',
+  'number', 'routing', 'memberId', 'accounts', 'recentTransactions', 'firstName', 'mask',
 ]
 
 export interface Leak {

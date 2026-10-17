@@ -1,6 +1,6 @@
 import type { Exchange, VaultClient } from './client'
 import type { Leak } from './secrets'
-import type { Cart, Scenario, Step } from './scenarios'
+import type { CartItem, Scenario, Step } from './scenarios'
 
 export type Actor = 'member' | 'shopping agent' | 'agent a' | 'agent b' | 'vault' | 'network' | 'attacker' | 'narrator'
 
@@ -10,7 +10,6 @@ export interface StepResult {
   index: number
   actor: Actor
   title: string
-  /** Human-readable detail lines for the narrated demo. */
   lines: string[]
   checks: Check[]
   exchange?: Exchange
@@ -26,29 +25,27 @@ export interface ScenarioResult {
 
 export const usd = (cents: number) => (cents / 100).toLocaleString('en-US', { style: 'currency', currency: 'USD' })
 
-const cartTotal = (cart: Cart) => cart.items.reduce((s, i) => s + i.qty * i.unitPriceCents, 0)
-const describeCart = (cart: Cart) => cart.items.map(i => `${i.qty}x ${i.name} @ ${usd(i.unitPriceCents)}`).join(', ')
+const cartTotal = (items: CartItem[]) => items.reduce((s, i) => s + i.qty * i.priceCents, 0)
+const describeCart = (items: CartItem[]) => items.map(i => `${i.qty}x ${i.name} @ ${usd(i.priceCents)}`).join(', ')
 
-/** Keys of a JSON object, one level deep for nested objects, e.g. `card{pan, cvv}`. */
 function shapeOf(json: unknown): string {
   if (!json || typeof json !== 'object' || Array.isArray(json)) return typeof json
   return Object.entries(json as Record<string, unknown>).map(([k, v]) =>
     v && typeof v === 'object' && !Array.isArray(v) ? `${k}{${Object.keys(v as object).join(', ')}}` : k).join(', ')
 }
 
-/**
- * Runs one scenario against a client. Never throws on an unexpected outcome: each step records checks so the
- * demo keeps going and the summary (and the tests) can report exactly which expectation broke.
- */
 export async function runScenario(sc: Scenario, client: VaultClient, onStep?: (s: StepResult) => void): Promise<ScenarioResult> {
   const steps: StepResult[] = []
+  const tasks = new Map<string, string>()
   const cards = new Map<string, string>()
+  const cardViews = new Map<string, Record<string, unknown>>()
   let lastPlan: Extract<Step, { kind: 'agent_plans' }> | undefined
   const startExchanges = client.exchanges.length
 
-  const opening = await client.memberVault()
-  const openingBalance: number | undefined = opening.json?.member?.balanceCents
+  const opening = await client.getMember()
+  const openingBalance: number | undefined = opening.json?.accounts?.[0]?.balanceCents
 
+  const taskId = (alias = 'task') => tasks.get(alias) ?? `(no task "${alias}")`
   const cardId = (alias = 'card') => cards.get(alias) ?? `(no card "${alias}")`
 
   const emit = (index: number, actor: Actor, title: string, lines: string[] = [], checks: Check[] = [], exchange?: Exchange) => {
@@ -76,65 +73,84 @@ export async function runScenario(sc: Scenario, client: VaultClient, onStep?: (s
         emit(n, 'shopping agent', `derives task + budget${step.note ? ` (${step.note})` : ''}`, [
           `task: "${step.task}"`,
           `budget: ${usd(step.budgetCents)}`,
-          `categories: ${step.allowedCategories.join(', ')}`,
+          `categories: ${step.categories.join(', ')}`,
         ])
         break
 
-      case 'request_card': {
-        if (!lastPlan) { emit(n, 'vault', 'request_card without a plan', [], [{ ok: false, what: 'agent_plans step before request_card' }]); break }
-        const ex = await client.agentRequestCard({ task: lastPlan.task, budgetCents: lastPlan.budgetCents, allowedCategories: lastPlan.allowedCategories })
+      case 'confirm_task': {
+        if (!lastPlan) { emit(n, 'vault', 'confirm_task without a plan', [], [{ ok: false, what: 'agent_plans before confirm_task' }]); break }
+        const ex = await client.confirmTask({
+          agentName: lastPlan.agentName ?? 'Demo Shopping Agent',
+          task: lastPlan.task,
+          budgetCents: lastPlan.budgetCents,
+          categories: lastPlan.categories,
+        })
         const j = ex.json ?? {}
-        if (typeof j.id === 'string') cards.set(step.as ?? 'card', j.id)
-        const lines = [`POST /api/agent/cards -> ${ex.status} ${j.status ?? ''}`]
-        if (j.card) {
-          lines.push(`virtual card ••${String(j.card.pan).slice(-4)}  exp ${j.card.expMonth}/${j.card.expYear}  ${usd(j.card.remainingCents)} fake money`)
-          lines.push(`rules: ${usd(j.rules.budgetCents)} · ${j.rules.allowedCategories.join(', ')} · expires ${j.rules.expiresAt}`)
-        } else {
-          lines.push(`card: null  reasons: ${JSON.stringify(j.reasons)}`)
+        if (typeof j.taskId === 'string') tasks.set(step.as ?? 'task', j.taskId)
+        const lines = [
+          `POST /tasks/confirm -> ${ex.status} ${j.status ?? ''}`,
+          j.reason ? `reason: ${j.reason}` : '',
+          Array.isArray(j.checks) ? `checks: ${j.checks.map((c: { id: string; pass: boolean }) => `${c.id}:${c.pass ? 'pass' : 'FAIL'}`).join(', ')}` : '',
+        ].filter(Boolean)
+        const checks = [eq('status', j.status, step.expect)]
+        if (step.reasonMatching) {
+          checks.push({ ok: step.reasonMatching.test(String(j.reason ?? '')), what: `reason matches ${step.reasonMatching}`, got: String(j.reason) })
         }
-        const checks = [eq('http', ex.status, step.expectHttp), eq('status', j.status, step.expectStatus)]
-        if (step.expectReason) {
-          const reasons: string[] = Array.isArray(j.reasons) ? j.reasons : []
-          checks.push({ ok: reasons.some(r => step.expectReason!.test(r)), what: `agent-visible reason matches ${step.expectReason}`, got: JSON.stringify(reasons) })
-        }
-        emit(n, 'agent a', `audits the request for THIS member`, lines, checks, ex)
+        emit(n, 'agent a', 'audits the request for THIS member', lines, checks, ex)
         break
       }
 
       case 'member_override': {
-        const ex = await client.memberOverride(cardId(step.card), step.approve)
+        const ex = await client.overrideTask(taskId(step.task), step.approve)
         const j = ex.json ?? {}
-        const lines = [`POST /api/vault/cards/:id/override {approve: ${step.approve}} -> ${ex.status} ${j.status ?? j.error ?? ''}`]
-        if (j.card) lines.push(`virtual card ••${String(j.card.pan).slice(-4)} minted with ${usd(j.card.remainingCents)}`)
-        emit(n, 'member', step.approve ? 'approves on the vault dashboard' : 'rejects on the vault dashboard', lines,
-          [eq('status', j.status, step.expectStatus)], ex)
+        emit(n, 'member', step.approve ? 'approves on the vault dashboard' : 'rejects on the vault dashboard',
+          [`POST /tasks/:id/override {approve: ${step.approve}} -> ${ex.status} ${j.status ?? j.error ?? ''}`, j.reason ? String(j.reason) : ''],
+          [eq('status', j.status, step.expect)], ex)
+        break
+      }
+
+      case 'mint_card': {
+        const ex = await client.mintCard(taskId(step.task))
+        const j = ex.json ?? {}
+        if (ex.status === 200 && j.cardId) {
+          cards.set(step.as ?? 'card', j.cardId)
+          cardViews.set(step.as ?? 'card', j)
+          const lines = [
+            `POST /cards {taskId} -> OPEN virtual card ••${String(j.pan).slice(-4)}  exp ${j.expiry}`,
+            `limit ${usd(j.limitCents)} fake money · categories ${j.rules?.allowedCategories?.join(', ')}`,
+            `rules: single-use, expires ${j.rules?.expiresAt}`,
+          ]
+          emit(n, 'vault', 'mints virtual card (real account never shared)', lines, [eq('status', j.status, step.expect)], ex)
+        } else {
+          emit(n, 'vault', 'mint refused', [`${ex.status} ${j.error}: ${j.message}`], [eq('mint error', j.error, step.expect)], ex)
+        }
         break
       }
 
       case 'submit_cart': {
-        const ex = await client.agentSubmitCart(cardId(step.card), step.cart)
+        const ex = await client.submitCart(cardId(step.card), step.items)
         const j = ex.json ?? {}
-        emit(n, 'shopping agent', `submits cart: ${step.label} (${usd(cartTotal(step.cart))} at ${step.cart.merchant})`, [describeCart(step.cart)])
-        const lines = [`attempt #${j.attempt ?? '?'} -> ${j.approved ? 'APPROVED' : 'REJECTED'}`]
-        if (j.message) lines.push(String(j.message))
-        const checks = [eq('approved', j.approved, step.expect === 'approved')]
+        emit(n, 'shopping agent', `submits cart: ${step.label} (${usd(cartTotal(step.items))})`, [describeCart(step.items)])
+        const lines = [`attempt #${j.attempt ?? '?'} -> ${String(j.status ?? '').toUpperCase()}`, j.feedback ? String(j.feedback) : '']
+        const checks = [eq('cart status', j.status, step.expect)]
+        const blob = JSON.stringify(j)
         for (const re of step.rejectsMatching ?? []) {
-          const hit = (j.rejections ?? []).some((r: { name: string; reason: string }) => re.test(r.name) || re.test(r.reason))
-          checks.push({ ok: hit, what: `rejection mentions ${re}`, got: hit ? undefined : JSON.stringify(j.rejections) })
+          checks.push({ ok: re.test(blob), what: `rejection mentions ${re}`, got: re.test(blob) ? undefined : blob.slice(0, 200) })
         }
-        emit(n, 'agent b', `confirms the WHOLE cart against task + budget`, lines, checks, ex)
+        emit(n, 'agent b', 'confirms the WHOLE cart against task + budget', lines.filter(Boolean), checks, ex)
         break
       }
 
       case 'checkout': {
-        const ex = await client.agentCheckout(cardId(step.card))
+        const ex = await client.checkout(cardId(step.card))
         const j = ex.json ?? {}
         if (ex.status === 200) {
-          const lines = [
-            `bought ${usd(j.totalCents)} at ${j.merchant} with fake money`,
-            `card CLOSED immediately; ${usd(j.refundedToAccountCents)} unspent released to the member`,
-          ]
-          emit(n, 'vault', 'checkout: buy once, then close the card', lines, [eq('checkout', 'ok', step.expect)], ex)
+          emit(n, 'vault', 'checkout: buy once, then close the card', [
+            `bought ${usd(j.chargedCents)} with fake money`,
+            `card ${j.cardStatus} at ${j.closedAt}`,
+          ], [eq('checkout', 'ok', step.expect), eq('cardStatus', j.cardStatus, 'CLOSED')], ex)
+          const view = cardViews.get(step.card ?? 'card')
+          if (view) cardViews.set(step.card ?? 'card', { ...view, status: 'CLOSED', balanceCents: 0 })
         } else {
           emit(n, 'vault', 'checkout refused', [`${ex.status} ${j.error}: ${j.message}`], [eq('checkout error', j.error, step.expect)], ex)
         }
@@ -142,41 +158,38 @@ export async function runScenario(sc: Scenario, client: VaultClient, onStep?: (s
       }
 
       case 'charge': {
-        const ex = await client.agentCharge(cardId(step.card), { merchant: step.merchant, category: step.category, amountCents: step.amountCents })
+        const ex = await client.charge(cardId(step.card), { merchant: step.merchant, category: step.category, amountCents: step.amountCents })
         const j = ex.json ?? {}
         const actor: Actor = /attacker/i.test(step.label) ? 'attacker' : 'shopping agent'
         emit(n, actor, `${step.label}: ${usd(step.amountCents)} at ${step.merchant} (${step.category})`)
-        const got = j.approved ? 'approved' : j.code
-        emit(n, 'network', j.approved ? 'APPROVED' : `DECLINED ${j.code}`, [j.reason ?? `remaining ${usd(j.remainingCents ?? 0)}`],
-          [eq('auth result', got, step.expect)], ex)
+        emit(n, 'network', j.approved ? 'APPROVED' : `DECLINED ${j.code}`, [j.message ?? ''], [eq('auth result', j.code, step.expect)], ex)
         break
       }
 
       case 'agent_inspects': {
-        const ex = await client.agentGetCard(cardId(step.card))
-        const j = ex.json ?? {}
-        const lines = [`GET /api/agent/cards/:id -> ${ex.status} ${j.status ?? ''}`, `fields visible to the agent: ${shapeOf(j)}`]
-        if (j.card) lines.push(`card: ••${String(j.card.pan).slice(-4)}  remaining ${usd(j.card.remainingCents)}  spent ${usd(j.card.spentCents)}`)
+        const view = cardViews.get(step.card ?? 'card')
         const leaks = client.agentLeaks()
-        lines.push(leaks.length ? `LEAK: ${leaks.map(l => `${l.kind} ${l.match}`).join(', ')}` : 'no account number, routing number, balance, or member name - anywhere, ever')
+        const lines = [
+          view ? `card fields the agent holds: ${shapeOf(view)}` : 'no card in agent memory yet',
+          view ? `••${String(view.pan).slice(-4)}  status ${view.status}  remaining ${usd(Number(view.balanceCents ?? 0))}` : '',
+          leaks.length ? `LEAK: ${leaks.map(l => `${l.kind} ${l.match}`).join(', ')}` : 'no account number, routing, member id, or raw balance - anywhere on the agent surface',
+        ].filter(Boolean)
         emit(n, /attacker/i.test(step.label) ? 'attacker' : 'shopping agent', step.label, lines,
-          [{ ok: leaks.length === 0, what: 'agent surface contains no real-account data', got: leaks.length ? JSON.stringify(leaks) : undefined }], ex)
+          [{ ok: leaks.length === 0, what: 'agent surface contains no real-account data', got: leaks.length ? JSON.stringify(leaks) : undefined }])
         break
       }
 
       case 'member_dashboard': {
-        const ex = await client.memberVault()
+        const ex = await client.getMember()
         const j = ex.json ?? {}
-        const bal: number | undefined = j.member?.balanceCents
+        const bal: number | undefined = j.accounts?.[0]?.balanceCents
         const lines = [
-          `member ${j.member?.name} · account ••${j.member?.accountLast4} · balance ${bal === undefined ? '?' : usd(bal)}` +
-            (openingBalance !== undefined && bal !== undefined ? ` (${bal - openingBalance >= 0 ? '+' : '-'}${usd(Math.abs(bal - openingBalance))} since start)` : ''),
-          ...(Array.isArray(j.cards) ? j.cards.map((c: { id: string; status: string; task: string; detail?: string[] }) =>
-            `${c.id} ${c.status} "${c.task}"${c.detail?.length ? ` - ${c.detail.join(' ')}` : ''}`) : []),
+          `member ${j.firstName} · checking ••${j.accounts?.[0]?.mask} · balance ${bal === undefined ? '?' : usd(bal)}` +
+            (openingBalance !== undefined && bal !== undefined ? ` (${bal - openingBalance >= 0 ? '+' : ''}${usd(bal - openingBalance)} since start)` : ''),
         ]
         const checks: Check[] = []
         if (step.expectBalanceDeltaCents !== undefined && openingBalance !== undefined && bal !== undefined) {
-          checks.push(eq('real balance delta', bal - openingBalance, step.expectBalanceDeltaCents))
+          checks.push(eq('checking balance delta', bal - openingBalance, step.expectBalanceDeltaCents))
         }
         emit(n, 'member', `dashboard: ${step.label}`, lines, checks, ex)
         break

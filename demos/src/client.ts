@@ -1,20 +1,17 @@
 import { findForbiddenKeys, findLeaksInText, type Leak } from './secrets'
 
 export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
-
 export type Surface = 'agent' | 'member'
 
-/** Header the member dashboard sends; the shopping agent must never receive or send it. */
 export const MEMBER_HEADER = 'x-member-token'
+export const SESSION_HEADER = 'x-session'
 export const DEFAULT_MEMBER_TOKEN = process.env.VAULT_MEMBER_TOKEN ?? 'demo-member-token'
 
-/** One HTTP round trip, kept so the demo can prove what each side was ever shown. */
 export interface Exchange {
   surface: Surface
   method: string
   path: string
   reqBody?: unknown
-  /** Headers WE sent. Used to prove the agent surface never carries the member token. */
   reqHeaders: Record<string, string>
   status: number
   text: string
@@ -23,8 +20,10 @@ export interface Exchange {
 }
 
 /**
- * Thin client over the backend's two surfaces. Everything called through the `agent*` methods is
- * what the shopping agent (or an attacker holding the agent) can see.
+ * Thin client over the backend VaultApi (paths under /api). Agent-surface calls never send the
+ * member token. Every exchange is recorded for leak scanning.
+ *
+ * baseUrl examples: `http://localhost:8787/api` or in-process `http://vault.local/api`
  */
 export class VaultClient {
   readonly exchanges: Exchange[] = []
@@ -33,11 +32,12 @@ export class VaultClient {
     readonly base: string,
     private readonly fetchImpl: FetchLike,
     readonly memberToken: string = DEFAULT_MEMBER_TOKEN,
+    readonly sessionId: string = `demo-${Math.random().toString(36).slice(2, 10)}`,
   ) {}
 
   private async call(surface: Surface, method: string, path: string, body?: unknown): Promise<Exchange> {
-    const headers: Record<string, string> = { 'content-type': 'application/json' }
-    // Member token only on the member surface. Agent calls must never carry it (S3 / D8).
+    const headers: Record<string, string> = { [SESSION_HEADER]: this.sessionId }
+    if (body !== undefined) headers['content-type'] = 'application/json'
     if (surface === 'member') headers[MEMBER_HEADER] = this.memberToken
     const res = await this.fetchImpl(this.base + path, {
       method,
@@ -52,27 +52,28 @@ export class VaultClient {
     return ex
   }
 
-  // ---- agent-facing surface ----
-  agentRequestCard(body: { task: string; budgetCents: number; allowedCategories: string[] }) {
-    return this.call('agent', 'POST', '/api/agent/cards', body)
+  // ---- agent ----
+  confirmTask(body: { agentName: string; task: string; budgetCents: number; categories: string[] }) {
+    return this.call('agent', 'POST', '/tasks/confirm', body)
   }
-  agentGetCard(id: string) { return this.call('agent', 'GET', `/api/agent/cards/${id}`) }
-  agentSubmitCart(id: string, cart: unknown) { return this.call('agent', 'POST', `/api/agent/cards/${id}/cart`, cart) }
-  agentCheckout(id: string) { return this.call('agent', 'POST', `/api/agent/cards/${id}/checkout`) }
-  agentCharge(id: string, body: { merchant: string; category: string; amountCents: number }) {
-    return this.call('agent', 'POST', `/api/agent/cards/${id}/charge`, body)
+  mintCard(taskId: string) { return this.call('agent', 'POST', '/cards', { taskId }) }
+  submitCart(cardId: string, items: unknown[]) { return this.call('agent', 'POST', `/cards/${cardId}/cart`, { items }) }
+  checkout(cardId: string) { return this.call('agent', 'POST', `/cards/${cardId}/checkout`) }
+  charge(cardId: string, body: { merchant: string; category: string; amountCents: number }) {
+    return this.call('agent', 'POST', `/cards/${cardId}/charge`, body)
   }
 
-  // ---- member / vault surface ----
-  memberVault() { return this.call('member', 'GET', '/api/vault') }
-  memberOverride(id: string, approve: boolean) { return this.call('member', 'POST', `/api/vault/cards/${id}/override`, { approve }) }
-  events(since = 0) { return this.call('member', 'GET', `/api/events?since=${since}`) }
-  health() { return this.call('member', 'GET', '/api/health') }
-  reset() { return this.call('member', 'POST', '/api/demo/reset') }
+  // ---- member ----
+  getMember() { return this.call('member', 'GET', '/member') }
+  overrideTask(taskId: string, approve: boolean) {
+    return this.call('member', 'POST', `/tasks/${taskId}/override`, { approve })
+  }
+  events(since = 0) { return this.call('member', 'GET', `/events?since=${since}`) }
+  reset() { return this.call('member', 'POST', '/reset') }
+  health() { return this.call('member', 'GET', '/health') }
 
   agentExchanges(): Exchange[] { return this.exchanges.filter(e => e.surface === 'agent') }
 
-  /** Every secret value or member-only key that ever appeared on the agent surface. */
   agentLeaks(): Leak[] {
     const leaks: Leak[] = []
     for (const ex of this.agentExchanges()) {

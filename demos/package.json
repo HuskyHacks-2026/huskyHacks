@@ -6,7 +6,7 @@
   "scripts": {
     "demo": "tsx src/run.ts",
     "test": "vitest run",
-    "test:live": "API=http://localhost:8787 vitest run",
+    "test:live": "API=http://localhost:8787/api vitest run",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm test"
   },
