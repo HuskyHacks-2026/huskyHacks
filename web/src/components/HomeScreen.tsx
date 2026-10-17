@@ -38,7 +38,7 @@ export function HomeScreen({ member, onOpenAgentPay, activeTask }: {
       <button className="feature" onClick={onOpenAgentPay} data-testid="open-agent-pay">
         <span className="feature__icon" aria-hidden="true"><ShieldCheck size={22} /></span>
         <span className="feature__body">
-          <span className="feature__title">Agent Pay {activeTask && <span className="tag tag--live">Active</span>}</span>
+          <span className="feature__title">Escrow {activeTask && <span className="tag tag--live">Active</span>}</span>
           <span className="feature__text">
             {activeTask ?? 'Give AI shopping agents a single-use card. Never your account.'}
           </span>

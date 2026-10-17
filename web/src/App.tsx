@@ -26,7 +26,7 @@ export default function App() {
         <div className="topbar__brand">
           <span className="wordmark">Sound Credit Union</span>
           <span className="topbar__divider" aria-hidden="true" />
-          <span className="topbar__product">Agent Pay</span>
+          <span className="topbar__product">Escrow</span>
         </div>
         <span className="topbar__meta">Concept demo · <span className="mode">{API_MODE}</span></span>
       </header>
@@ -74,7 +74,7 @@ function Stage({ member, tab, setTab, onRestart }: {
       <div className="stage__copy">
         <h1>Let an AI agent shop for you without handing it your account.</h1>
         <p>
-          Agent Pay issues a single-use virtual card for each task, checks the request against the member’s history,
+          Escrow issues a single-use virtual card for each task, checks the request against the member’s history,
           approves the whole cart, then closes the card.
         </p>
       </div>
