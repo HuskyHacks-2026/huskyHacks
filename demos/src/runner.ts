@@ -168,7 +168,7 @@ export async function runScenario(sc: Scenario, client: VaultClient, onStep?: (s
 
       case 'agent_inspects': {
         const view = cardViews.get(step.card ?? 'card')
-        const leaks = client.agentLeaks()
+        const leaks = client.agentLeaks(startExchanges)
         const lines = [
           view ? `card fields the agent holds: ${shapeOf(view)}` : 'no card in agent memory yet',
           view ? `••${String(view.pan).slice(-4)}  status ${view.status}  remaining ${usd(Number(view.balanceCents ?? 0))}` : '',
@@ -188,8 +188,11 @@ export async function runScenario(sc: Scenario, client: VaultClient, onStep?: (s
             (openingBalance !== undefined && bal !== undefined ? ` (${bal - openingBalance >= 0 ? '+' : ''}${usd(bal - openingBalance)} since start)` : ''),
         ]
         const checks: Check[] = []
-        if (step.expectBalanceDeltaCents !== undefined && openingBalance !== undefined && bal !== undefined) {
-          checks.push(eq('checking balance delta', bal - openingBalance, step.expectBalanceDeltaCents))
+        if (step.expectBalanceDeltaCents !== undefined) {
+          // never skip silently: a broken /member response must fail the scenario, not pass it
+          checks.push(openingBalance !== undefined && bal !== undefined
+            ? eq('checking balance delta', bal - openingBalance, step.expectBalanceDeltaCents)
+            : { ok: false, what: 'member balance readable before and after', got: `opening=${openingBalance} now=${bal} (status ${ex.status})` })
         }
         emit(n, 'member', `dashboard: ${step.label}`, lines, checks, ex)
         break
@@ -197,7 +200,7 @@ export async function runScenario(sc: Scenario, client: VaultClient, onStep?: (s
     }
   }
 
-  const leaks = client.agentLeaks()
+  const leaks = client.agentLeaks(startExchanges)
   const agentResponses = client.exchanges.slice(startExchanges).filter(e => e.surface === 'agent').length
   const failures = steps.flatMap(s => s.checks.filter(c => !c.ok).map(c => `step ${s.index} [${s.actor}] ${s.title}: expected ${c.what}${c.got ? `, got ${c.got}` : ''}`))
   if (leaks.length) failures.push(`agent surface leaked: ${leaks.map(l => `${l.method} ${l.path} ${l.kind}:${l.match}`).join('; ')}`)

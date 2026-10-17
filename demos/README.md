@@ -43,3 +43,6 @@ Exit code is non-zero if any expectation fails or any secret reaches the agent s
 | This folder | scenario fixtures, expected outcomes, leak scan, narrated rehearsal, regression tests |
 
 If the backend changes behavior, `npm test` here says exactly which step of which scenario broke and what came back instead.
+
+## On the website
+The web app's **Test cases** tab (`web/src/components/TestCases.tsx`) imports `src/client.ts`, `src/runner.ts` and `src/scenarios.ts` from this package and runs all scenarios live from the browser (one isolated session each). Browser check: `npm run test:ui -- <site-url>` (needs `playwright-core` + Chrome; set `CHROME_PATH` if not on macOS). Adding a scenario here adds it to the site automatically; update the id list in `e2e/test-cases.mjs`.

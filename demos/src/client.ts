@@ -76,9 +76,10 @@ export class VaultClient {
 
   agentExchanges(): Exchange[] { return this.exchanges.filter(e => e.surface === 'agent') }
 
-  agentLeaks(): Leak[] {
+  /** Leaks in agent-facing traffic, optionally only exchanges recorded after index `from`. */
+  agentLeaks(from = 0): Leak[] {
     const leaks: Leak[] = []
-    for (const ex of this.agentExchanges()) {
+    for (const ex of this.exchanges.slice(from).filter(e => e.surface === 'agent')) {
       for (const match of findLeaksInText(ex.text)) leaks.push({ method: ex.method, path: ex.path, kind: 'value', match })
       for (const match of findForbiddenKeys(ex.json)) leaks.push({ method: ex.method, path: ex.path, kind: 'key', match })
     }

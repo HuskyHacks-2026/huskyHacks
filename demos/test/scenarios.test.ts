@@ -58,3 +58,23 @@ describe('member token stays off the agent surface', () => {
     }
   })
 })
+
+describe('runner cannot silently pass', () => {
+  it('fails the scenario when the member balance is unreadable (broken /member)', async () => {
+    const c = await freshClient()
+    const broken = Object.create(c) as typeof c
+    broken.getMember = async () => ({ surface: 'member', method: 'GET', path: '/member', reqHeaders: {}, status: 401, text: '', json: null })
+    const sc = SCENARIOS.find(s => s.id === 'groceries-week')!
+    const r = await runScenario(sc, broken)
+    expect(r.failures.some(f => /balance readable/.test(f))).toBe(true)
+  })
+
+  it('leak scan only covers the scenario being run, not earlier traffic on a reused client', async () => {
+    const c = await freshClient()
+    await c.getMember() // member surface, ignored
+    c.exchanges.push({ surface: 'agent', method: 'GET', path: '/old', reqHeaders: {}, status: 200, text: '7700384821', json: null })
+    const sc = SCENARIOS.find(s => s.id === 'casino-denied')!
+    const r = await runScenario(sc, c)
+    expect(r.leaks).toEqual([])
+  })
+})
