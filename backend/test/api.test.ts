@@ -7,7 +7,7 @@ let app: ReturnType<typeof createApp>
 beforeEach(() => { app = createApp() })
 
 const call = async (method: string, path: string, body?: unknown) => {
-  const res = await app.request(path, { method, headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })
+  const res = await app.request(path, { method, headers: { 'content-type': 'application/json', 'x-member-token': 'demo-member-token' }, body: body === undefined ? undefined : JSON.stringify(body) })
   const text = await res.text()
   return { status: res.status, text, json: text ? JSON.parse(text) : null }
 }
@@ -109,6 +109,32 @@ describe('S1/S3: agent surface never leaks real account data', () => {
     expect(v).toContain('9214')
     expect(v).not.toContain('8675309214')
     expect(v).not.toContain('325081403')
+  })
+})
+
+describe('member token gate', () => {
+  const raw = (path: string, method = 'GET', token?: string) =>
+    app.request(path, { method, headers: token ? { 'x-member-token': token } : {}, body: method === 'POST' ? '{"approve":true}' : undefined })
+
+  it('agent cannot read the vault, events, override its own request, or reset', async () => {
+    const { mint } = await runScenario('boat')
+    for (const [path, m] of [['/api/vault', 'GET'], ['/api/events', 'GET'], [`/api/vault/cards/${mint.json.id}/override`, 'POST'], ['/api/demo/reset', 'POST']] as const) {
+      expect((await raw(path, m)).status).toBe(401)
+      expect((await raw(path, m, 'guess')).status).toBe(401)
+    }
+    expect((await call('GET', `/api/agent/cards/${mint.json.id}`)).json.status).toBe('PENDING_OVERRIDE')
+  })
+
+  it('honors a custom token and keeps the agent surface open', async () => {
+    const a = createApp(undefined, 's3cret')
+    expect((await a.request('/api/vault', { headers: { 'x-member-token': 's3cret' } })).status).toBe(200)
+    expect((await a.request('/api/vault', { headers: { 'x-member-token': 'demo-member-token' } })).status).toBe(401)
+    expect((await a.request('/api/demo/scenarios')).status).toBe(200)
+  })
+
+  it('CORS preflight allows the token header', async () => {
+    const r = await app.request('/api/vault', { method: 'OPTIONS', headers: { origin: 'http://localhost:5173', 'access-control-request-method': 'GET', 'access-control-request-headers': 'x-member-token' } })
+    expect(r.headers.get('access-control-allow-headers')).toMatch(/x-member-token/i)
   })
 })
 

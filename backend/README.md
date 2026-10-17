@@ -15,7 +15,7 @@ In-memory TypeScript API (Hono) implementing PRD §13 / decisions D1-D13. `npm i
 | `POST /api/agent/cards/:id/checkout` | Only after full approval; buys the approved cart, **closes the card**, releases remainder. `409` otherwise. |
 | `POST /api/agent/cards/:id/charge` `{merchant, category, amountCents}` | Raw network auth for the off-task/compromise demo. `402` hard decline: `CARD_CLOSED` `CARD_EXPIRED` `OFF_TASK` `OVER_BUDGET` `BAD_AMOUNT` |
 
-**Member/vault-facing (frontend dashboard)**
+**Member/vault-facing (frontend dashboard)** - every call below except `/api/demo/scenarios` needs header `x-member-token: demo-member-token` (override with env `VAULT_MEMBER_TOKEN`; else `401`). The agent never gets it, so it can't approve its own override, read the vault or reset.
 
 | Call | Result |
 | --- | --- |
@@ -34,5 +34,5 @@ Money is integer cents. Statuses: `PENDING_OVERRIDE | OPEN | CLOSED | DENIED`.
 - Funds are **held** from the member's real balance at mint and the unspent remainder released at close. Cards expire after 30 min.
 - `/charge` is a network-auth simulator: it only authorizes after Agent B approved the whole cart (D10), and declines off-task/over-budget/closed/expired cards. In reality the category would come from the merchant's MCC, not the agent.
 - Agent-facing `reasons` are generic; the detailed Agent A reasons (caps, history) go only to `GET /api/vault` (`detail`) and `/api/events`.
-- **Known limits:** member endpoints (`/api/vault`, override, reset, events) share the unauthenticated demo server, so don't expose it publicly; Agent B's keyword catalog is a stand-in for an LLM and can be fooled by names mixing an allowed keyword with unlisted words.
+- **Known limits:** the member token is a shared demo secret, not real auth, so don't expose the server publicly; Agent B's keyword catalog is a stand-in for an LLM and can be fooled by names mixing an allowed keyword with unlisted words.
 - State is in memory; restart or `/api/demo/reset` clears it.

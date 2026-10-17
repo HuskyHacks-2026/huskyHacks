@@ -1,4 +1,4 @@
-import { Hono } from 'hono'
+import { Hono, type MiddlewareHandler } from 'hono'
 import { cors } from 'hono/cors'
 import { z } from 'zod'
 import { isCategory } from './catalog'
@@ -24,10 +24,21 @@ const cartBody = z.object({
 })
 const chargeBody = z.object({ merchant: z.string().min(1), category, amountCents: z.number().int().min(1).max(1_000_000_000) })
 
-export function createApp(makeVault: () => Vault = () => new Vault()) {
+export const MEMBER_HEADER = 'x-member-token'
+
+/** Member-side routes require this token; the agent surface never gets it. */
+export function createApp(makeVault: () => Vault = () => new Vault(), memberToken = process.env.VAULT_MEMBER_TOKEN ?? 'demo-member-token') {
   let vault = makeVault()
   const app = new Hono()
-  app.use('*', cors())
+  app.use('*', cors({ allowHeaders: ['content-type', MEMBER_HEADER] }))
+  const memberOnly: MiddlewareHandler = async (c, next) => {
+    if (c.req.header(MEMBER_HEADER) !== memberToken) return c.json({ error: 'UNAUTHORIZED', message: 'Member token required.' }, 401)
+    await next()
+  }
+  app.use('/api/vault/*', memberOnly)
+  app.use('/api/vault', memberOnly)
+  app.use('/api/events', memberOnly)
+  app.use('/api/demo/reset', memberOnly)
 
   app.onError((err, c) => {
     if (err instanceof VaultError) return c.json({ error: err.code, message: err.message }, err.http as 404 | 409)
