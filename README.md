@@ -1,4 +1,4 @@
-# huskyHacks
+# Escrow
 
 Team repo for **HuskyHack 2026** (Sound Credit Union × UW Tacoma Milgard Center for Business Analytics).
 
