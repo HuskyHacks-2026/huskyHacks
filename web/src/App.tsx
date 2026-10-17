@@ -7,6 +7,7 @@ import { PhoneFrame, type Tab } from './components/PhoneFrame'
 import { HomeScreen } from './components/HomeScreen'
 import { AgentPayScreen } from './components/AgentPayScreen'
 import { AgentConsole } from './components/AgentConsole'
+import { TestCases } from './components/TestCases'
 
 const API_MODE = import.meta.env.VITE_API_MODE === 'http' ? 'Live API' : 'Mock API'
 
@@ -15,6 +16,7 @@ export default function App() {
   const [member, setMember] = useState<MemberSummary | null>(null)
   const [tab, setTab] = useState<Tab>('home')
   const [sessionKey, setSessionKey] = useState(0)
+  const [view, setView] = useState<'demo' | 'tests'>('demo')
 
   useEffect(() => { api.getMember().then(setMember).catch(() => setMember(null)) }, [api])
 
@@ -28,10 +30,16 @@ export default function App() {
           <span className="topbar__divider" aria-hidden="true" />
           <span className="topbar__product">Escrow</span>
         </div>
+        <nav className="topbar__nav" aria-label="View">
+          <button className={view === 'demo' ? 'is-active' : ''} onClick={() => setView('demo')} data-testid="view-demo">Live demo</button>
+          <button className={view === 'tests' ? 'is-active' : ''} onClick={() => setView('tests')} data-testid="view-tests">Test cases</button>
+        </nav>
         <span className="topbar__meta">Concept demo · <span className="mode">{API_MODE}</span></span>
       </header>
 
-      <Stage key={sessionKey} member={member} tab={tab} setTab={setTab} onRestart={restart} />
+      {view === 'demo'
+        ? <Stage key={sessionKey} member={member} tab={tab} setTab={setTab} onRestart={restart} />
+        : <TestCases />}
 
       <section className="principles" aria-label="How it works">
         <Principle n="01" icon={<KeyRound size={20} />} title="An alias, not an account">
