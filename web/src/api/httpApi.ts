@@ -11,11 +11,24 @@ import type { VaultApi } from './types'
  *   POST /cards/:cardId/charge     body: { merchant, category, amountCents } -> ChargeResult
  *   POST /reset
  */
-export function createHttpApi(baseUrl: string): VaultApi {
-  async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown): Promise<T> {
-    const res = await fetch(`${baseUrl}${path}`, {
+export interface HttpApiOptions {
+  /** Isolates this browser's vault on the server (x-session). */
+  sessionId?: string
+  /** Sent only on member-side calls (member, override, reset). A shopping agent never has it. */
+  memberToken?: string
+  fetchImpl?: typeof fetch
+}
+
+export function createHttpApi(baseUrl: string, opts: HttpApiOptions = {}): VaultApi {
+  const doFetch = opts.fetchImpl ?? fetch
+  async function call<T>(method: 'GET' | 'POST', path: string, body?: unknown, asMember = false): Promise<T> {
+    const headers: Record<string, string> = {}
+    if (body) headers['Content-Type'] = 'application/json'
+    if (opts.sessionId) headers['x-session'] = opts.sessionId
+    if (asMember && opts.memberToken) headers['x-member-token'] = opts.memberToken
+    const res = await doFetch(`${baseUrl}${path}`, {
       method,
-      headers: body ? { 'Content-Type': 'application/json' } : undefined,
+      headers,
       body: body ? JSON.stringify(body) : undefined,
     })
     if (!res.ok) throw new Error(`${method} ${path} failed: ${res.status} ${await res.text()}`)
@@ -23,14 +36,14 @@ export function createHttpApi(baseUrl: string): VaultApi {
   }
 
   return {
-    getMember: () => call('GET', '/member'),
+    getMember: () => call('GET', '/member', undefined, true),
     confirmTask: (req) => call('POST', '/tasks/confirm', req),
-    overrideTask: (taskId, approve) => call('POST', `/tasks/${taskId}/override`, { approve }),
+    overrideTask: (taskId, approve) => call('POST', `/tasks/${taskId}/override`, { approve }, true),
     mintCard: (taskId) => call('POST', '/cards', { taskId }),
     submitCart: (cardId, items) => call('POST', `/cards/${cardId}/cart`, { items }),
     checkout: (cardId) => call('POST', `/cards/${cardId}/checkout`),
     attemptCharge: (cardId, merchant, category, amountCents) =>
       call('POST', `/cards/${cardId}/charge`, { merchant, category, amountCents }),
-    reset: () => call('POST', '/reset'),
+    reset: () => call('POST', '/reset', undefined, true),
   }
 }

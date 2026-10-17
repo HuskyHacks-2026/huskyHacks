@@ -1,4 +1,4 @@
-# Agent Pay: Phase 1 demo front end
+# Escrow: Phase 1 demo front end
 
 ```bash
 npm install
@@ -6,7 +6,7 @@ npm run dev        # http://localhost:5173
 ```
 
 ## Demo path
-1. Tap **Agent Pay**, then **Weekly groceries**. Agent A approves and a virtual card is minted.
+1. Tap **Escrow**, then **Weekly groceries**. Agent A approves and a virtual card is minted.
 2. Press **Agent submits cart**. Agent B rejects the TV and gift card (prompt injection).
 3. Press **Agent fixes & resubmits**. The whole cart is approved.
 4. Press **Buy & close card**. The card is charged and shows CLOSED.

@@ -7,6 +7,7 @@ import { PhoneFrame, type Tab } from './components/PhoneFrame'
 import { HomeScreen } from './components/HomeScreen'
 import { AgentPayScreen } from './components/AgentPayScreen'
 import { AgentConsole } from './components/AgentConsole'
+import { TestCases } from './components/TestCases'
 
 const API_MODE = import.meta.env.VITE_API_MODE === 'http' ? 'Live API' : 'Mock API'
 
@@ -15,6 +16,7 @@ export default function App() {
   const [member, setMember] = useState<MemberSummary | null>(null)
   const [tab, setTab] = useState<Tab>('home')
   const [sessionKey, setSessionKey] = useState(0)
+  const [view, setView] = useState<'demo' | 'tests'>('demo')
 
   useEffect(() => { api.getMember().then(setMember).catch(() => setMember(null)) }, [api])
 
@@ -26,12 +28,18 @@ export default function App() {
         <div className="topbar__brand">
           <span className="wordmark">Sound Credit Union</span>
           <span className="topbar__divider" aria-hidden="true" />
-          <span className="topbar__product">Agent Pay</span>
+          <span className="topbar__product">Escrow</span>
         </div>
+        <nav className="topbar__nav" aria-label="View">
+          <button className={view === 'demo' ? 'is-active' : ''} onClick={() => setView('demo')} data-testid="view-demo">Live demo</button>
+          <button className={view === 'tests' ? 'is-active' : ''} onClick={() => setView('tests')} data-testid="view-tests">Test cases</button>
+        </nav>
         <span className="topbar__meta">Concept demo · <span className="mode">{API_MODE}</span></span>
       </header>
 
-      <Stage key={sessionKey} member={member} tab={tab} setTab={setTab} onRestart={restart} />
+      {view === 'demo'
+        ? <Stage key={sessionKey} member={member} tab={tab} setTab={setTab} onRestart={restart} />
+        : <TestCases />}
 
       <section className="principles" aria-label="How it works">
         <Principle n="01" icon={<KeyRound size={20} />} title="An alias, not an account">
@@ -74,7 +82,7 @@ function Stage({ member, tab, setTab, onRestart }: {
       <div className="stage__copy">
         <h1>Let an AI agent shop for you without handing it your account.</h1>
         <p>
-          Agent Pay issues a single-use virtual card for each task, checks the request against the member’s history,
+          Escrow issues a single-use virtual card for each task, checks the request against the member’s history,
           approves the whole cart, then closes the card.
         </p>
       </div>

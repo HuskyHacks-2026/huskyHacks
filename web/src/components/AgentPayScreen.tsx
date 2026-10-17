@@ -28,7 +28,7 @@ export function AgentPayScreen({ s, onBack }: { s: AgentSession; onBack: () => v
         <button className="icon-btn" onClick={onBack} data-testid="back" aria-label="Back to home">
           <ChevronLeft size={22} aria-hidden="true" />
         </button>
-        <h2 className="nav-bar__title">Agent Pay</h2>
+        <h2 className="nav-bar__title">Escrow</h2>
         <span className="icon-btn" aria-hidden="true" />
       </header>
 

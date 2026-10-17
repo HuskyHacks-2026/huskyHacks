@@ -13,6 +13,13 @@ export type Category =
   | 'gift_card'
   | 'marine'
   | 'entertainment'
+  // known to the backend so it can flag or deny them
+  | 'gambling'
+  | 'crypto'
+  | 'clothing'
+  | 'household'
+  | 'travel'
+  | 'luxury'
 
 /** Member-facing only. Never sent to the shopping agent. */
 export interface MemberSummary {
@@ -102,7 +109,7 @@ export interface Receipt {
 
 export interface ChargeResult {
   approved: boolean
-  code: 'APPROVED' | 'CARD_CLOSED' | 'OFF_TASK_BLOCKED' | 'OVER_LIMIT'
+  code: 'APPROVED' | 'CARD_CLOSED' | 'CARD_EXPIRED' | 'OFF_TASK_BLOCKED' | 'OVER_LIMIT' | 'BAD_AMOUNT' | 'CART_NOT_APPROVED'
   message: string
 }
 

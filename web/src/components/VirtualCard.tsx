@@ -12,7 +12,7 @@ export function VirtualCard({ card }: { card: Card }) {
         ))}
       </svg>
       <div className="vcard__row">
-        <span className="vcard__brand">Sound <span>Agent Pay</span></span>
+        <span className="vcard__brand">Sound <span>Escrow</span></span>
         <span className={`vcard__status ${closed ? '' : 'is-open'}`} data-testid="card-status">{closed ? 'CLOSED' : 'OPEN'}</span>
       </div>
       <div className="vcard__chip" aria-hidden="true" />

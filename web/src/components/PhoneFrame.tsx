@@ -19,7 +19,7 @@ export function PhoneFrame({ children, tab, onTab }: { children: ReactNode; tab:
         <div className="phone__content">{children}</div>
         <nav className="tabbar" aria-label="App">
           <TabButton label="Home" active={tab === 'home'} onClick={() => onTab('home')} icon={<House size={22} />} />
-          <TabButton label="Agent Pay" active={tab === 'agent'} onClick={() => onTab('agent')} icon={<Sparkles size={22} />} testId="tab-agent-pay" />
+          <TabButton label="Escrow" active={tab === 'agent'} onClick={() => onTab('agent')} icon={<Sparkles size={22} />} testId="tab-agent-pay" />
           <TabButton label="Cards" icon={<CreditCard size={22} />} />
           <TabButton label="More" icon={<Menu size={22} />} />
         </nav>
