@@ -13,6 +13,7 @@ const sc = (await j('GET', '/api/demo/scenarios')).body.find((s: any) => s.id ==
 step(`1-3. Agent requests virtual card: "${sc.task}" ${sc.budgetCents / 100} USD`)
 const mint = await j('POST', '/api/agent/cards', { task: sc.task, budgetCents: sc.budgetCents, allowedCategories: sc.allowedCategories })
 console.log(mint.status, JSON.stringify(mint.body.card))
+if (mint.status !== 201) throw new Error(`mint failed: ${mint.status} ${JSON.stringify(mint.body)}`)
 const id = mint.body.id
 
 step('4-5. Bad cart (TV) -> Agent B rejects -> agent fixes')

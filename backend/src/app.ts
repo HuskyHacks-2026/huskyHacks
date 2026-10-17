@@ -17,12 +17,12 @@ const cartBody = z.object({
   merchant: z.string().min(1).max(100),
   items: z.array(z.object({
     name: z.string().min(1).max(200),
-    qty: z.number(),
-    unitPriceCents: z.number(),
+    qty: z.number().int().min(1).max(10_000),
+    unitPriceCents: z.number().int().min(1).max(100_000_000),
     category: z.string().optional(),
   })).max(100),
 })
-const chargeBody = z.object({ merchant: z.string().min(1), category, amountCents: z.number() })
+const chargeBody = z.object({ merchant: z.string().min(1), category, amountCents: z.number().int().min(1).max(1_000_000_000) })
 
 export function createApp(makeVault: () => Vault = () => new Vault()) {
   let vault = makeVault()

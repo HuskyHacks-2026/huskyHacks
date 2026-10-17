@@ -105,7 +105,7 @@ export class Vault {
       status: c.status,
       task: c.task,
       rules: c.rules,
-      reasons: c.deniedReasons ?? c.override?.reasons ?? [],
+      reasons: this.agentReasons(c),
       card: issued
         ? {
             pan: c.pan, cvv: c.cvv, expMonth: c.expMonth, expYear: c.expYear,
@@ -139,7 +139,7 @@ export class Vault {
     }
     const cart = c.approvedCart
     const total = c.lastReview.totalCents
-    const res = this.authorize(c, cart.merchant, total, null)
+    const res = this.authorize(c, cart.merchant, total, null, true)
     if (!res.approved) throw new VaultError(res.code, res.reason)
     this.log('vault', 'checkout', `Bought ${dollars(total)} at ${cart.merchant}.`, id)
     const refunded = this.close(c, 'Purchase complete')
@@ -181,7 +181,8 @@ export class Vault {
       member: { name: this.member.name, accountLast4: a.accountNumber.slice(-4), balanceCents: a.balanceCents },
       historyCount: this.member.history.length,
       cards: [...this.cards.values()].map(c => ({
-        ...this.agentView(c.id), heldCents: c.heldCents, pendingOverride: c.status === 'PENDING_OVERRIDE',
+        ...this.agentView(c.id), detail: c.deniedReasons ?? c.override?.reasons ?? [],
+        heldCents: c.heldCents, pendingOverride: c.status === 'PENDING_OVERRIDE',
       })),
     }
   }
@@ -200,6 +201,7 @@ export class Vault {
       this.log('vault', 'mint_failed', 'Insufficient funds; card not minted.', c.id)
       return
     }
+    c.rules.expiresAt = new Date(this.now() + this.rules.cardTtlMs).toISOString()
     acct.balanceCents -= c.rules.budgetCents
     c.heldCents = c.rules.budgetCents
     c.pan = luhnPan()
@@ -211,15 +213,17 @@ export class Vault {
     this.log('vault', 'card_minted', `Minted virtual card ••${c.pan.slice(-4)} with ${dollars(c.rules.budgetCents)} fake money. Real account never shared.`, c.id)
   }
 
-  private authorize(c: Card, merchant: string, amountCents: number, category: Category | null): ChargeResult {
+  private authorize(c: Card, merchant: string, amountCents: number, category: Category | null, viaCheckout = false): ChargeResult {
     const decline = (code: string, reason: string): ChargeResult => ({ approved: false, code, reason })
     if (c.status !== 'OPEN') return decline('CARD_CLOSED', `Card is ${c.status}.`)
-    if (this.now() > Date.parse(c.rules.expiresAt)) return decline('CARD_EXPIRED', 'Card expired.')
+    if (this.now() > Date.parse(c.rules.expiresAt)) { this.close(c, 'Expired'); return decline('CARD_EXPIRED', 'Card expired.') }
     if (!Number.isInteger(amountCents) || amountCents < 1) return decline('BAD_AMOUNT', 'Invalid amount.')
     if (category && !c.rules.allowedCategories.includes(category)) {
       return decline('OFF_TASK', `Category "${category}" is not allowed on this card.`)
     }
     if (c.spentCents + amountCents > c.rules.budgetCents) return decline('OVER_BUDGET', 'Exceeds card balance.')
+    // D10: no spend while shopping; only the approved cart (via checkout) may move money.
+    if (!viaCheckout) return decline('CART_NOT_APPROVED', 'No spend until Agent B approves the whole cart.')
     c.spentCents += amountCents
     return { approved: true, remainingCents: c.rules.budgetCents - c.spentCents }
   }
@@ -239,6 +243,14 @@ export class Vault {
       this.close(c, 'Expired')
       throw new VaultError('CARD_EXPIRED', 'Card expired.')
     }
+  }
+
+  /** Agent-visible reasons are generic: never member history, caps or balance. */
+  private agentReasons(c: Card): string[] {
+    if (c.status === 'PENDING_OVERRIDE') return ['Requires member approval.']
+    if (c.status !== 'DENIED') return []
+    if (c.deniedReasons?.some(r => /^(Restricted|No spend)/.test(r))) return c.deniedReasons.filter(r => /^(Restricted|No spend)/.test(r))
+    return ['Request was not approved.']
   }
 
   private card(id: string): Card {

@@ -30,6 +30,9 @@ Money is integer cents. Statuses: `PENDING_OVERRIDE | OPEN | CLOSED | DENIED`.
 ## Behavior notes (demo-level choices where the PRD is open)
 
 - **Agent A** (Q21/Q23/Q26 undefined, so a short heuristic): deny restricted categories (gambling/crypto/gift cards); needs member override if budget > cap (default $200 for thin history <5 txns, else 3x the member's largest past txn) or a category the member never buys. Rule-based, deterministic; no LLM call to flake on stage.
-- **Agent B** classifies items by name itself and ignores the agent's category label. Unrecognized or ambiguous items fail closed. One bad line rejects the whole list (D13).
+- **Agent B** classifies items by name itself and ignores the agent's category label. Unrecognized items fail closed; an item matching several categories must have ALL of them allowed. One bad line rejects the whole list (D13).
 - Funds are **held** from the member's real balance at mint and the unspent remainder released at close. Cards expire after 30 min.
+- `/charge` is a network-auth simulator: it only authorizes after Agent B approved the whole cart (D10), and declines off-task/over-budget/closed/expired cards. In reality the category would come from the merchant's MCC, not the agent.
+- Agent-facing `reasons` are generic; the detailed Agent A reasons (caps, history) go only to `GET /api/vault` (`detail`) and `/api/events`.
+- **Known limits:** member endpoints (`/api/vault`, override, reset, events) share the unauthenticated demo server, so don't expose it publicly; Agent B's keyword catalog is a stand-in for an LLM and can be fooled by names mixing an allowed keyword with unlisted words.
 - State is in memory; restart or `/api/demo/reset` clears it.

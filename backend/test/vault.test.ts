@@ -55,23 +55,35 @@ describe('lifecycle', () => {
 })
 
 describe('hard block (D3)', () => {
-  it('declines off-task category and over-budget charges on an open card', () => {
+  it('declines off-task, over-budget and pre-approval charges on an open card', () => {
     const { v, id } = minted()
     expect(v.charge(id, 'AMC', 'entertainment', 1500)).toMatchObject({ approved: false, code: 'OFF_TASK' })
     expect(v.charge(id, 'QFC', 'groceries', 8001)).toMatchObject({ approved: false, code: 'OVER_BUDGET' })
-    expect(v.charge(id, 'QFC', 'groceries', 0)).toMatchObject({ approved: false })
-    expect(v.charge(id, 'QFC', 'groceries', 5000)).toMatchObject({ approved: true, remainingCents: 3000 })
-    expect(v.charge(id, 'QFC', 'groceries', 3001)).toMatchObject({ approved: false, code: 'OVER_BUDGET' })
+    expect(v.charge(id, 'QFC', 'groceries', 0)).toMatchObject({ approved: false, code: 'BAD_AMOUNT' })
+    // D10: no spend while shopping, even in-category and in-budget
+    expect(v.charge(id, 'QFC', 'groceries', 5000)).toMatchObject({ approved: false, code: 'CART_NOT_APPROVED' })
+    expect(v.agentView(id).card?.spentCents).toBe(0)
+    v.submitCart(id, { merchant: 'QFC', items: [milk] })
+    expect(v.charge(id, 'QFC', 'groceries', 5000)).toMatchObject({ approved: false, code: 'CART_NOT_APPROVED' })
   })
 
-  it('card expires (time-bound alias)', () => {
+  it('card expires (time-bound alias) and releases its hold even when only /charge notices', () => {
     let t = 1_000_000
     const v = new Vault({ clock: () => t })
-    const { id } = { id: v.requestCard(mintReq).id }
+    const { id } = v.requestCard(mintReq)
     t += 31 * 60 * 1000
     expect(v.charge(id, 'QFC', 'groceries', 100)).toMatchObject({ approved: false, code: 'CARD_EXPIRED' })
+    expect(v.agentView(id).status).toBe('CLOSED')
+    expect(v.vaultView().member.balanceCents).toBe(demoMember().realAccount.balanceCents)
+  })
+
+  it('expiry via cart submission also releases the hold', () => {
+    let t = 1_000_000
+    const v = new Vault({ clock: () => t })
+    const { id } = v.requestCard(mintReq)
+    t += 31 * 60 * 1000
     expect(() => v.submitCart(id, { merchant: 'QFC', items: [milk] })).toThrow(/expired/i)
-    expect(v.vaultView().member.balanceCents).toBe(demoMember().realAccount.balanceCents) // hold released
+    expect(v.vaultView().member.balanceCents).toBe(demoMember().realAccount.balanceCents)
   })
 })
 
@@ -88,6 +100,25 @@ describe('member override (D2, D8)', () => {
     const done = v.resolveOverride(view.id, true)
     expect(done.status).toBe('OPEN')
     expect(done.card?.pan).toHaveLength(16)
+  })
+
+  it('late approval gets a fresh TTL instead of an already-expired card', () => {
+    let t = 1_000_000
+    const rich = { ...demoMember(), realAccount: { ...demoMember().realAccount, balanceCents: 5_000_000 } }
+    const v = new Vault({ member: rich, clock: () => t })
+    const { id } = v.requestCard(boat)
+    t += 2 * 60 * 60 * 1000
+    v.resolveOverride(id, true)
+    expect(v.charge(id, 'Boats', 'luxury', 100)).not.toMatchObject({ code: 'CARD_EXPIRED' })
+  })
+
+  it('agent-visible reasons never carry member caps, history or balance details', () => {
+    const v = new Vault()
+    const pending = v.requestCard(boat)
+    expect(JSON.stringify(pending.reasons)).not.toMatch(/\$|history|cap|balance|funds/i)
+    expect(v.vaultView().cards[0]!.detail.join(' ')).toMatch(/cap/i) // member still sees why
+    const denied = v.resolveOverride(pending.id, true)
+    expect(JSON.stringify(denied.reasons)).not.toMatch(/funds|balance/i)
   })
 
   it('member rejection kills the request; cannot resolve twice', () => {
