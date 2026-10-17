@@ -3,12 +3,18 @@
   "private": true,
   "description": "Root manifest for the Vercel deploy: installs the API function's deps and builds web/.",
   "scripts": {
-    "build": "npm install --prefix web && npm run build --prefix web"
+    "build:api": "esbuild backend/src/vercel.ts --bundle --platform=node --format=cjs --target=node20 --outfile=api/index.js",
+    "build": "npm run build:api && npm install --prefix web && npm run build --prefix web"
   },
   "dependencies": {
     "@hono/node-server": "^1.13.0",
     "hono": "^4.6.0",
     "zod": "^3.23.0"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "esbuild": "^0.24.0"
+  }
 }
