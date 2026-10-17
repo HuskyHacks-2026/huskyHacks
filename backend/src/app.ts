@@ -2,43 +2,80 @@ import { Hono, type MiddlewareHandler } from 'hono'
 import { cors } from 'hono/cors'
 import { z } from 'zod'
 import { isCategory } from './catalog'
-import { SCENARIOS } from './scenarios'
+import { createJev, noJev, type Jev } from './jev'
+import { MemoryStore, storeFromEnv, type SessionStore } from './store'
 import type { Category } from './types'
 import { Vault, VaultError } from './vault'
 
+export const MEMBER_HEADER = 'x-member-token'
+export const SESSION_HEADER = 'x-session'
+
 const category = z.string().refine(isCategory, 'unknown category').transform(c => c as Category)
-const cents = z.number().int().positive().max(1_000_000_000)
-const mintBody = z.object({
+const taskBody = z.object({
+  agentName: z.string().min(1).max(100),
   task: z.string().min(1).max(500),
-  budgetCents: cents,
-  allowedCategories: z.array(category).min(1),
+  budgetCents: z.number().int().positive().max(1_000_000_000),
+  categories: z.array(category).min(1),
 })
 const cartBody = z.object({
-  merchant: z.string().min(1).max(100),
   items: z.array(z.object({
+    id: z.string().min(1).max(100),
     name: z.string().min(1).max(200),
+    merchant: z.string().min(1).max(100),
+    category,
+    priceCents: z.number().int().min(1).max(100_000_000),
     qty: z.number().int().min(1).max(10_000),
-    unitPriceCents: z.number().int().min(1).max(100_000_000),
-    category: z.string().optional(),
+    note: z.string().max(300).optional(),
   })).max(100),
 })
-const chargeBody = z.object({ merchant: z.string().min(1), category, amountCents: z.number().int().min(1).max(1_000_000_000) })
+const chargeBody = z.object({
+  merchant: z.string().min(1).max(100),
+  category,
+  amountCents: z.number().int().min(1).max(1_000_000_000),
+})
 
-export const MEMBER_HEADER = 'x-member-token'
+export interface AppOptions {
+  store?: SessionStore
+  jev?: Jev
+  memberToken?: string
+  clock?: () => number
+}
 
-/** Member-side routes require this token; the agent surface never gets it. */
-export function createApp(makeVault: () => Vault = () => new Vault(), memberToken = process.env.VAULT_MEMBER_TOKEN ?? 'demo-member-token') {
-  let vault = makeVault()
-  const app = new Hono()
-  app.use('*', cors({ allowHeaders: ['content-type', MEMBER_HEADER] }))
+export function jevFromEnv(env = process.env): Jev {
+  return env.TYPESAFE_API_KEY ? createJev({ apiKey: env.TYPESAFE_API_KEY }) : noJev
+}
+
+/**
+ * Implements the frontend's VaultApi over HTTP (paths in web/src/api/httpApi.ts), under /api.
+ * Each browser gets its own vault via the x-session header; state lives in the session store.
+ * Member-side calls (member, override, reset, events) need x-member-token; a compromised
+ * shopping agent never has it, so it cannot approve its own override or wipe the audit log.
+ */
+export function createApp(opts: AppOptions = {}) {
+  const store = opts.store ?? new MemoryStore()
+  const jev = opts.jev ?? noJev
+  const memberToken = opts.memberToken ?? process.env.VAULT_MEMBER_TOKEN ?? 'demo-member-token'
+
+  type Env = { Variables: { vault: Vault; sid: string } }
+  const app = new Hono<Env>()
+  app.use('*', cors({ allowHeaders: ['content-type', MEMBER_HEADER, SESSION_HEADER] }))
+
   const memberOnly: MiddlewareHandler = async (c, next) => {
     if (c.req.header(MEMBER_HEADER) !== memberToken) return c.json({ error: 'UNAUTHORIZED', message: 'Member token required.' }, 401)
     await next()
   }
-  app.use('/api/vault/*', memberOnly)
-  app.use('/api/vault', memberOnly)
-  app.use('/api/events', memberOnly)
-  app.use('/api/demo/reset', memberOnly)
+
+  // load this session's vault, persist it after any write
+  app.use('/api/*', async (c, next) => {
+    const sid = c.req.header(SESSION_HEADER) ?? 'demo'
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(sid)) return c.json({ error: 'BAD_SESSION', message: 'Invalid x-session.' }, 400)
+    const snapshot = (await store.get(sid)) ?? undefined
+    const vault = new Vault({ jev, clock: opts.clock, snapshot })
+    c.set('vault', vault)
+    c.set('sid', sid)
+    await next()
+    if (c.req.method !== 'GET' && c.res.status < 500) await store.set(sid, c.get('vault').snapshot())
+  })
 
   app.onError((err, c) => {
     if (err instanceof VaultError) return c.json({ error: err.code, message: err.message }, err.http as 404 | 409)
@@ -48,38 +85,37 @@ export function createApp(makeVault: () => Vault = () => new Vault(), memberToke
     return c.json({ error: 'INTERNAL', message: 'Unexpected error.' }, 500)
   })
 
-  app.get('/api/health', c => c.json({ ok: true }))
+  app.get('/api/health', c => c.json({ ok: true, jev: jev !== noJev }))
 
-  // ---- agent-facing surface: nothing about the real account ever appears here ----
-  app.post('/api/agent/cards', async c => {
-    const body = mintBody.parse(await c.req.json())
-    const view = vault.requestCard(body)
-    const code = view.status === 'DENIED' ? 403 : view.status === 'PENDING_OVERRIDE' ? 202 : 201
-    return c.json(view, code)
-  })
-  app.get('/api/agent/cards/:id', c => c.json(vault.agentView(c.req.param('id'))))
-  app.post('/api/agent/cards/:id/cart', async c => {
-    const cart = cartBody.parse(await c.req.json())
-    return c.json(vault.submitCart(c.req.param('id'), cart))
-  })
-  app.post('/api/agent/cards/:id/checkout', c => c.json(vault.checkout(c.req.param('id'))))
-  app.post('/api/agent/cards/:id/charge', async c => {
-    const b = chargeBody.parse(await c.req.json())
-    const res = vault.charge(c.req.param('id'), b.merchant, b.category, b.amountCents)
-    return c.json(res, res.approved ? 200 : 402)
-  })
-
-  // ---- member/vault-facing surface (frontend dashboard) ----
-  app.get('/api/vault', c => c.json(vault.vaultView()))
-  app.post('/api/vault/cards/:id/override', async c => {
+  // ---- member side ----
+  app.get('/api/member', memberOnly, c => c.json(c.get('vault').getMember()))
+  app.post('/api/tasks/:id/override', memberOnly, async c => {
     const { approve } = z.object({ approve: z.boolean() }).parse(await c.req.json())
-    return c.json(vault.resolveOverride(c.req.param('id'), approve))
+    return c.json(c.get('vault').overrideTask(c.req.param('id'), approve))
   })
-  app.get('/api/events', c => c.json(vault.eventsSince(Number(c.req.query('since') ?? 0) || 0)))
+  app.get('/api/events', memberOnly, c => c.json(c.get('vault').eventsSince(Number(c.req.query('since') ?? 0) || 0)))
+  app.post('/api/reset', memberOnly, async c => {
+    c.set('vault', new Vault({ jev, clock: opts.clock }))
+    return c.body(null, 204)
+  })
 
-  // ---- demo helpers ----
-  app.get('/api/demo/scenarios', c => c.json(SCENARIOS))
-  app.post('/api/demo/reset', c => { vault = makeVault(); return c.json({ ok: true }) })
+  // ---- agent side ----
+  app.post('/api/tasks/confirm', async c => c.json(await c.get('vault').confirmTask(taskBody.parse(await c.req.json()))))
+  app.post('/api/cards', async c => {
+    const { taskId } = z.object({ taskId: z.string() }).parse(await c.req.json())
+    return c.json(c.get('vault').mintCard(taskId))
+  })
+  app.post('/api/cards/:id/cart', async c => {
+    const { items } = cartBody.parse(await c.req.json())
+    return c.json(await c.get('vault').submitCart(c.req.param('id'), items))
+  })
+  app.post('/api/cards/:id/checkout', c => c.json(c.get('vault').checkout(c.req.param('id'))))
+  app.post('/api/cards/:id/charge', async c => {
+    const b = chargeBody.parse(await c.req.json())
+    return c.json(c.get('vault').attemptCharge(c.req.param('id'), b.merchant, b.category, b.amountCents))
+  })
 
   return app
 }
+
+export const appFromEnv = () => createApp({ store: storeFromEnv(), jev: jevFromEnv() })

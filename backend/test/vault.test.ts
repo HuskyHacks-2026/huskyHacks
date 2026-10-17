@@ -1,170 +1,164 @@
 import { describe, expect, it } from 'vitest'
 import { demoMember } from '../src/data'
+import { SCENARIOS } from '../src/scenarios'
+import type { CartItem, TaskRequest } from '../src/types'
 import { Vault, VaultError } from '../src/vault'
 
-const mintReq = { task: 'buy groceries', budgetCents: 8000, allowedCategories: ['groceries' as const] }
-const milk = { name: 'Whole milk', qty: 1, unitPriceCents: 449 }
-const tv = { name: 'Smart TV', qty: 1, unitPriceCents: 39999 }
+const groc = SCENARIOS.find(s => s.id === 'groceries')!
+const boat = SCENARIOS.find(s => s.id === 'boat')!
+const START = demoMember().accounts[0]!.balanceCents
+const checking = (v: Vault) => v.getMember().accounts.find(a => a.id === 'chk')!.balanceCents
+const bad = groc.carts[0]!
+const clean = groc.carts[1]!
 
-function minted(v = new Vault()) {
-  const view = v.requestCard(mintReq)
-  expect(view.status).toBe('OPEN')
-  return { v, id: view.id }
+async function mintedGroceries(v = new Vault()) {
+  const t = await v.confirmTask(groc.request)
+  expect(t.status).toBe('approved')
+  const card = v.mintCard(t.taskId)
+  return { v, card, id: card.cardId }
 }
 
-describe('lifecycle', () => {
-  it('mints, holds funds from the real account, loops carts, buys once, closes, releases remainder', () => {
-    const { v, id } = minted()
-    const start = demoMember().realAccount.balanceCents
-    expect(v.vaultView().member.balanceCents).toBe(start - 8000)
+describe('lifecycle (PRD 13.1)', () => {
+  it('mints, holds funds, loops carts, buys once, closes, releases the remainder', async () => {
+    const { v, id, card } = await mintedGroceries()
+    expect(card.pan).toMatch(/^\d{4} \d{4} \d{4} \d{4}$/)
+    expect(card.expiry).toMatch(/^\d\d\/\d\d$/)
+    expect(card.rules.singleUse).toBe(true)
+    expect(checking(v)).toBe(START - 8000)
 
-    expect(v.submitCart(id, { merchant: 'QFC', items: [milk, tv] }).approved).toBe(false)
-    expect(() => v.checkout(id)).toThrow(VaultError) // no partial / unapproved checkout
-    const ok = v.submitCart(id, { merchant: 'QFC', items: [milk] })
-    expect(ok.approved).toBe(true)
+    expect((await v.submitCart(id, bad)).status).toBe('rejected')
+    expect(() => v.checkout(id)).toThrow(VaultError)
+    const ok = await v.submitCart(id, clean)
+    expect(ok.status).toBe('approved')
     expect(ok.attempt).toBe(2)
 
-    const receipt = v.checkout(id)
-    expect(receipt.totalCents).toBe(449)
-    expect(receipt.refundedToAccountCents).toBe(8000 - 449)
-    expect(v.agentView(id).status).toBe('CLOSED')
-    expect(v.vaultView().member.balanceCents).toBe(start - 449)
+    const r = v.checkout(id)
+    expect(r.cardStatus).toBe('CLOSED')
+    expect(r.chargedCents).toBe(ok.totalCents)
+    expect(checking(v)).toBe(START - ok.totalCents)
   })
 
-  it('a rejected resubmit after an approval revokes the approval', () => {
-    const { v, id } = minted()
-    v.submitCart(id, { merchant: 'QFC', items: [milk] })
-    v.submitCart(id, { merchant: 'QFC', items: [milk, tv] })
+  it('a rejected resubmit after an approval revokes the approval', async () => {
+    const { v, id } = await mintedGroceries()
+    await v.submitCart(id, clean)
+    await v.submitCart(id, bad)
     expect(() => v.checkout(id)).toThrow(/not approved/i)
   })
 
-  it('checkout charges the approved cart, not anything sent later', () => {
-    const { v, id } = minted()
-    v.submitCart(id, { merchant: 'QFC', items: [milk] })
-    expect(v.checkout(id).totalCents).toBe(449)
+  it('closed card hard-blocks spend, carts and checkout (the rogue-agent demo)', async () => {
+    const { v, id } = await mintedGroceries()
+    await v.submitCart(id, clean); v.checkout(id)
+    expect(v.attemptCharge(id, 'giftcardz.biz', 'gift_card', 50000)).toMatchObject({ approved: false, code: 'CARD_CLOSED' })
+    expect(() => v.checkout(id)).toThrow(VaultError)
+    await expect(v.submitCart(id, clean)).rejects.toThrow(VaultError)
   })
 
-  it('closed card hard-blocks all further spend and cart/checkout calls', () => {
-    const { v, id } = minted()
-    v.submitCart(id, { merchant: 'QFC', items: [milk] }); v.checkout(id)
-    const res = v.charge(id, 'QFC', 'groceries', 100)
-    expect(res).toMatchObject({ approved: false, code: 'CARD_CLOSED' })
-    expect(() => v.checkout(id)).toThrow(VaultError)
-    expect(() => v.submitCart(id, { merchant: 'QFC', items: [milk] })).toThrow(VaultError)
+  it('one card per task', async () => {
+    const { v } = await mintedGroceries()
+    expect(() => v.mintCard('task_1')).toThrow(/already/i)
+  })
+
+  it('cannot mint for an unapproved/denied/unknown task', async () => {
+    const v = new Vault()
+    const t = await v.confirmTask(boat.request)
+    expect(t.status).toBe('needs_override')
+    expect(() => v.mintCard(t.taskId)).toThrow(/not approved/i)
+    expect(() => v.mintCard('task_999')).toThrow(VaultError)
   })
 })
 
-describe('hard block (D3)', () => {
-  it('declines off-task, over-budget and pre-approval charges on an open card', () => {
-    const { v, id } = minted()
-    expect(v.charge(id, 'AMC', 'entertainment', 1500)).toMatchObject({ approved: false, code: 'OFF_TASK' })
-    expect(v.charge(id, 'QFC', 'groceries', 8001)).toMatchObject({ approved: false, code: 'OVER_BUDGET' })
-    expect(v.charge(id, 'QFC', 'groceries', 0)).toMatchObject({ approved: false, code: 'BAD_AMOUNT' })
-    // D10: no spend while shopping, even in-category and in-budget
-    expect(v.charge(id, 'QFC', 'groceries', 5000)).toMatchObject({ approved: false, code: 'CART_NOT_APPROVED' })
-    expect(v.agentView(id).card?.spentCents).toBe(0)
-    v.submitCart(id, { merchant: 'QFC', items: [milk] })
-    expect(v.charge(id, 'QFC', 'groceries', 5000)).toMatchObject({ approved: false, code: 'CART_NOT_APPROVED' })
+describe('hard block (D3) and no-spend-while-shopping (D10)', () => {
+  it('declines off-task, over-limit, bad-amount and pre-approval charges on an open card', async () => {
+    const { v, id } = await mintedGroceries()
+    expect(v.attemptCharge(id, 'AMC', 'entertainment', 1500)).toMatchObject({ approved: false, code: 'OFF_TASK_BLOCKED' })
+    expect(v.attemptCharge(id, 'QFC', 'grocery', 8001)).toMatchObject({ approved: false, code: 'OVER_LIMIT' })
+    expect(v.attemptCharge(id, 'QFC', 'grocery', 0)).toMatchObject({ approved: false, code: 'BAD_AMOUNT' })
+    expect(v.attemptCharge(id, 'QFC', 'grocery', 5000)).toMatchObject({ approved: false, code: 'CART_NOT_APPROVED' })
+    await v.submitCart(id, clean)
+    expect(v.attemptCharge(id, 'QFC', 'grocery', 100)).toMatchObject({ approved: false, code: 'CART_NOT_APPROVED' })
+    expect(checking(v)).toBe(START - 8000) // nothing moved
   })
 
-  it('card expires (time-bound alias) and releases its hold even when only /charge notices', () => {
+  it('card expires and releases its hold even if only /charge notices', async () => {
     let t = 1_000_000
     const v = new Vault({ clock: () => t })
-    const { id } = v.requestCard(mintReq)
+    const { id } = await mintedGroceries(v)
     t += 31 * 60 * 1000
-    expect(v.charge(id, 'QFC', 'groceries', 100)).toMatchObject({ approved: false, code: 'CARD_EXPIRED' })
-    expect(v.agentView(id).status).toBe('CLOSED')
-    expect(v.vaultView().member.balanceCents).toBe(demoMember().realAccount.balanceCents)
+    expect(v.attemptCharge(id, 'QFC', 'grocery', 100)).toMatchObject({ approved: false, code: 'CARD_EXPIRED' })
+    expect(checking(v)).toBe(START)
   })
 
-  it('expiry via cart submission also releases the hold', () => {
+  it('expiry noticed on cart submission also releases the hold', async () => {
     let t = 1_000_000
     const v = new Vault({ clock: () => t })
-    const { id } = v.requestCard(mintReq)
+    const { id } = await mintedGroceries(v)
     t += 31 * 60 * 1000
-    expect(() => v.submitCart(id, { merchant: 'QFC', items: [milk] })).toThrow(/expired/i)
-    expect(v.vaultView().member.balanceCents).toBe(demoMember().realAccount.balanceCents)
+    await expect(v.submitCart(id, clean)).rejects.toThrow(/expired/i)
+    expect(checking(v)).toBe(START)
   })
 })
 
 describe('member override (D2, D8)', () => {
-  const boat = { task: 'buy a boat', budgetCents: 1_000_000, allowedCategories: ['luxury' as const] }
-
-  it('suspicious request waits, issues no card number, mints only after member approves', () => {
-    const v = new Vault({ member: { ...demoMember(), realAccount: { ...demoMember().realAccount, balanceCents: 5_000_000 } } })
-    const view = v.requestCard(boat)
-    expect(view.status).toBe('PENDING_OVERRIDE')
-    expect(view.card).toBeNull()
-    expect(() => v.submitCart(view.id, { merchant: 'x', items: [milk] })).toThrow(VaultError)
-    expect(v.charge(view.id, 'x', 'luxury', 100)).toMatchObject({ approved: false })
-    const done = v.resolveOverride(view.id, true)
-    expect(done.status).toBe('OPEN')
-    expect(done.card?.pan).toHaveLength(16)
+  it('approved override can mint if the account can fund it', async () => {
+    const m = demoMember(); m.accounts[0]!.balanceCents = 20_000_000
+    const v = new Vault({ member: m })
+    const t = await v.confirmTask(boat.request)
+    expect(v.overrideTask(t.taskId, true).status).toBe('approved')
+    expect(v.mintCard(t.taskId).limitCents).toBe(10_000_000)
   })
 
-  it('late approval gets a fresh TTL instead of an already-expired card', () => {
-    let t = 1_000_000
-    const rich = { ...demoMember(), realAccount: { ...demoMember().realAccount, balanceCents: 5_000_000 } }
-    const v = new Vault({ member: rich, clock: () => t })
-    const { id } = v.requestCard(boat)
-    t += 2 * 60 * 60 * 1000
-    v.resolveOverride(id, true)
-    expect(v.charge(id, 'Boats', 'luxury', 100)).not.toMatchObject({ code: 'CARD_EXPIRED' })
-  })
-
-  it('agent-visible reasons never carry member caps, history or balance details', () => {
+  it('approved override still cannot mint what the account cannot fund', async () => {
     const v = new Vault()
-    const pending = v.requestCard(boat)
-    expect(JSON.stringify(pending.reasons)).not.toMatch(/\$|history|cap|balance|funds/i)
-    expect(v.vaultView().cards[0]!.detail.join(' ')).toMatch(/cap/i) // member still sees why
-    const denied = v.resolveOverride(pending.id, true)
-    expect(JSON.stringify(denied.reasons)).not.toMatch(/funds|balance/i)
+    const t = await v.confirmTask(boat.request)
+    v.overrideTask(t.taskId, true)
+    expect(() => v.mintCard(t.taskId)).toThrow(/funds/i)
+    expect(checking(v)).toBe(START)
   })
 
-  it('member rejection kills the request; cannot resolve twice', () => {
+  it('declined override ends the request; cannot resolve twice; denied tasks are never overridable', async () => {
     const v = new Vault()
-    const { id } = v.requestCard(boat)
-    expect(v.resolveOverride(id, false).status).toBe('DENIED')
-    expect(() => v.resolveOverride(id, true)).toThrow(VaultError)
-  })
-
-  it('approved override still fails if real account cannot fund it', () => {
-    const v = new Vault()
-    const { id } = v.requestCard(boat)
-    expect(v.resolveOverride(id, true).status).toBe('DENIED')
-    expect(v.vaultView().member.balanceCents).toBe(demoMember().realAccount.balanceCents)
-  })
-
-  it('denied (restricted) request is never overridable', () => {
-    const v = new Vault()
-    const { id, status } = v.requestCard({ task: 'casino', budgetCents: 5000, allowedCategories: ['gambling'] })
-    expect(status).toBe('DENIED')
-    expect(() => v.resolveOverride(id, true)).toThrow(VaultError)
+    const t = await v.confirmTask(boat.request)
+    expect(v.overrideTask(t.taskId, false).status).toBe('denied')
+    expect(() => v.overrideTask(t.taskId, true)).toThrow(VaultError)
+    const g = await v.confirmTask({ agentName: 'x', task: 'casino', budgetCents: 5000, categories: ['gambling'] } as TaskRequest)
+    expect(g.status).toBe('denied')
+    expect(() => v.overrideTask(g.taskId, true)).toThrow(VaultError)
   })
 })
 
-describe('invariants under random charge sequences', () => {
-  it('never spends past budget, never charges after close, money is conserved', () => {
-    let seed = 42
+describe('session snapshots (serverless persistence)', () => {
+  it('a restored vault continues exactly where the last one stopped', async () => {
+    const a = new Vault()
+    const t = await a.confirmTask(groc.request)
+    const id = a.mintCard(t.taskId).cardId
+    await a.submitCart(id, clean)
+    const b = new Vault({ snapshot: JSON.parse(JSON.stringify(a.snapshot())) })
+    expect(b.checkout(id).cardStatus).toBe('CLOSED')
+    expect(checking(b)).toBeLessThan(START)
+  })
+})
+
+describe('invariants under random operation sequences', () => {
+  it('never overspends, never spends outside checkout, money is conserved', async () => {
+    let seed = 7
     const rnd = () => (seed = (seed * 1664525 + 1013904223) % 2 ** 32) / 2 ** 32
-    for (let run = 0; run < 50; run++) {
+    const carts: CartItem[][] = [...groc.carts, [], [{ ...clean[0]!, priceCents: 999_999 }]]
+    for (let run = 0; run < 40; run++) {
       const v = new Vault()
-      const start = v.vaultView().member.balanceCents
-      const { id } = v.requestCard(mintReq)
-      let spent = 0
-      for (let i = 0; i < 20; i++) {
-        const amt = Math.floor(rnd() * 3000)
-        const cat = rnd() < 0.7 ? 'groceries' : 'entertainment'
-        const r = v.charge(id, 'M', cat, amt)
-        if (r.approved) spent += amt
-        expect(spent).toBeLessThanOrEqual(8000)
-        if (i === 10) { v.submitCart(id, { merchant: 'QFC', items: [milk] }); try { const rc = v.checkout(id); spent += rc.totalCents } catch { /* over budget */ } }
+      const t = await v.confirmTask(groc.request)
+      const id = v.mintCard(t.taskId).cardId
+      let charged = 0
+      for (let i = 0; i < 12; i++) {
+        const r = rnd()
+        try {
+          if (r < 0.4) await v.submitCart(id, carts[Math.floor(rnd() * carts.length)]!)
+          else if (r < 0.6) charged += v.checkout(id).chargedCents
+          else v.attemptCharge(id, 'M', rnd() < 0.5 ? 'grocery' : 'gift_card', Math.floor(rnd() * 20000))
+        } catch (e) { expect(e).toBeInstanceOf(VaultError) }
+        expect(charged).toBeLessThanOrEqual(8000)
       }
-      const view = v.vaultView()
-      const card = view.cards[0]!
-      expect(card.card!.spentCents).toBe(spent)
-      // nothing created or lost: open -> balance + hold == start; closed -> balance + spent == start
-      expect(view.member.balanceCents + (card.status === 'CLOSED' ? spent : card.heldCents)).toBe(start)
+      const closed = charged > 0
+      expect(checking(v)).toBe(closed ? START - charged : START - 8000)
     }
   })
 })

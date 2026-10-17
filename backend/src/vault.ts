@@ -1,9 +1,11 @@
 import { randomInt } from 'node:crypto'
-import { agentA, type MintRequest } from './agentA'
+import { agentA } from './agentA'
 import { agentB } from './agentB'
-import { DEFAULT_RULESET, demoMember } from './data'
+import { DEFAULT_RULESET, SESSION_FUNDING_ACCOUNT, demoMember } from './data'
+import { noJev, type Jev } from './jev'
 import type {
-  Actor, CardRules, CardStatus, Cart, CartReview, DefaultRuleset, Member, Receipt, VaultEvent, Category,
+  CartItem, CartVerdict, Category, ChargeResult, DefaultRuleset, Member, MemberSummary, Receipt, TaskRequest,
+  TaskVerdict, VirtualCard,
 } from './types'
 import { dollars } from './types'
 
@@ -13,253 +15,226 @@ export class VaultError extends Error {
   }
 }
 
+export type Actor = 'member' | 'shopping_agent' | 'agent_a' | 'agent_b' | 'vault' | 'network'
+export interface VaultEvent { seq: number; ts: string; actor: Actor; type: string; summary: string; ref?: string }
+
+interface Task { id: string; req: TaskRequest; verdict: TaskVerdict; cardId?: string }
 interface Card {
   id: string
-  task: string
-  status: CardStatus
-  rules: CardRules
-  pan?: string
-  cvv?: string
-  expMonth?: number
-  expYear?: number
+  taskId: string
+  status: 'OPEN' | 'CLOSED'
+  pan: string
+  cvv: string
+  expiry: string
+  allowedCategories: Category[]
+  maxTotalCents: number
+  expiresAt: string
   heldCents: number
   spentCents: number
-  override?: { reasons: string[] }
-  deniedReasons?: string[]
-  lastReview?: CartReview
-  approvedCart?: Cart
   attempts: number
+  last?: { verdict: CartVerdict; items: CartItem[] }
 }
+
+/** Plain JSON so a session can be parked in Redis between serverless invocations. */
+export interface Snapshot { member: Member; tasks: Task[]; cards: Card[]; events: VaultEvent[]; seq: number }
 
 export interface VaultOptions {
-  member?: Member
   rules?: DefaultRuleset
   clock?: () => number
+  jev?: Jev
+  /** Restore a previous session instead of starting fresh. */
+  snapshot?: Snapshot
+  member?: Member
 }
 
-export type ChargeResult =
-  | { approved: true; remainingCents: number }
-  | { approved: false; code: string; reason: string }
+const pad = (n: number) => String(n).padStart(2, '0')
 
 function luhnPan(): string {
-  const digits = [4, 0, 0, 0, 0, 0] // test-range prefix; never a real BIN
-  while (digits.length < 15) digits.push(randomInt(0, 10))
+  const d = [4, 0, 0, 0, 0, 0] // test-range prefix; never a real BIN
+  while (d.length < 15) d.push(randomInt(0, 10))
   let sum = 0
-  digits.forEach((d, i) => {
-    let v = d
-    if ((digits.length - i) % 2 === 1) { v *= 2; if (v > 9) v -= 9 }
+  d.forEach((x, i) => {
+    let v = x
+    if ((d.length - i) % 2 === 1) { v *= 2; if (v > 9) v -= 9 }
     sum += v
   })
-  digits.push((10 - (sum % 10)) % 10)
-  return digits.join('')
+  d.push((10 - (sum % 10)) % 10)
+  return d.join('').replace(/(\d{4})(?=\d)/g, '$1 ')
 }
 
 export class Vault {
-  private member: Member
+  private s: Snapshot
   private rules: DefaultRuleset
   private now: () => number
-  private cards = new Map<string, Card>()
-  private events: VaultEvent[] = []
-  private nextCard = 1
+  private jev: Jev
 
   constructor(opts: VaultOptions = {}) {
-    this.member = opts.member ?? demoMember()
     this.rules = opts.rules ?? DEFAULT_RULESET
     this.now = opts.clock ?? Date.now
+    this.jev = opts.jev ?? noJev
+    this.s = opts.snapshot ?? { member: opts.member ?? demoMember(), tasks: [], cards: [], events: [], seq: 0 }
   }
 
-  // ---------- agent-facing (never exposes member data) ----------
+  snapshot(): Snapshot { return structuredClone(this.s) }
 
-  requestCard(req: MintRequest, actor: Actor = 'shopping_agent') {
-    const id = `card_${this.nextCard++}`
-    this.log(actor, 'card_requested', `Requested virtual card for "${req.task}" - ${dollars(req.budgetCents)}`, id)
-    const verdict = agentA(this.member, req, this.rules)
-    this.log('agent_a', `task_${verdict.decision}`, verdict.reasons.join(' '), id, { decision: verdict.decision })
+  // ---------- member-side ----------
 
-    const rules: CardRules = {
-      budgetCents: req.budgetCents,
-      allowedCategories: [...req.allowedCategories],
-      expiresAt: new Date(this.now() + this.rules.cardTtlMs).toISOString(),
-    }
-    const card: Card = { id, task: req.task, status: 'OPEN', rules, heldCents: 0, spentCents: 0, attempts: 0 }
-    this.cards.set(id, card)
-
-    if (verdict.decision === 'deny') {
-      card.status = 'DENIED'
-      card.deniedReasons = verdict.reasons
-    } else if (verdict.decision === 'needs_override') {
-      card.status = 'PENDING_OVERRIDE'
-      card.override = { reasons: verdict.reasons }
-      this.log('vault', 'override_requested', 'Waiting for member approval before minting.', id)
-    } else {
-      this.mint(card)
-    }
-    return this.agentView(id)
-  }
-
-  agentView(id: string) {
-    const c = this.card(id)
-    const issued = c.status === 'OPEN' || c.status === 'CLOSED'
+  /** Masks only; real account/routing numbers never leave the Vault. */
+  getMember(): MemberSummary {
+    const m = this.s.member
     return {
-      id: c.id,
-      status: c.status,
-      task: c.task,
-      rules: c.rules,
-      reasons: this.agentReasons(c),
-      card: issued
-        ? {
-            pan: c.pan, cvv: c.cvv, expMonth: c.expMonth, expYear: c.expYear,
-            remainingCents: c.status === 'OPEN' ? c.rules.budgetCents - c.spentCents : 0,
-            spentCents: c.spentCents,
-          }
-        : null,
-      cart: c.lastReview ? { approved: c.lastReview.approved, attempt: c.lastReview.attempt } : null,
+      firstName: m.firstName,
+      accounts: m.accounts.map(a => ({ id: a.id, name: a.name, mask: a.number.slice(-4), balanceCents: a.balanceCents })),
+      recentTransactions: m.history.map(h => ({ ...h })) as MemberSummary['recentTransactions'],
     }
   }
 
-  submitCart(id: string, cart: Cart): CartReview {
-    const c = this.card(id)
+  overrideTask(taskId: string, approve: boolean): TaskVerdict {
+    const t = this.task(taskId)
+    if (t.verdict.status !== 'needs_override') {
+      throw new VaultError('NOT_PENDING', `Task is ${t.verdict.status}, not awaiting member override.`)
+    }
+    this.log('member', approve ? 'override_approved' : 'override_rejected', `Member ${approve ? 'approved' : 'declined'} the request.`, taskId)
+    t.verdict = {
+      ...t.verdict,
+      status: approve ? 'approved' : 'denied',
+      reason: approve ? 'Approved by member override.' : 'Declined by member. No card issued.',
+    }
+    return structuredClone(t.verdict)
+  }
+
+  eventsSince(seq = 0) { return this.s.events.filter(e => e.seq > seq) }
+
+  // ---------- agent-side ----------
+
+  async confirmTask(req: TaskRequest): Promise<TaskVerdict> {
+    const id = `task_${++this.s.seq}`
+    this.log('shopping_agent', 'task_submitted', `${req.agentName}: "${req.task}" ${dollars(req.budgetCents)}`, id)
+    const verdict = await agentA(id, this.s.member, req, this.rules, this.jev)
+    this.s.tasks.push({ id, req, verdict })
+    this.log('agent_a', `task_${verdict.status}`, verdict.reason, id)
+    return structuredClone(verdict)
+  }
+
+  mintCard(taskId: string): VirtualCard {
+    const t = this.task(taskId)
+    if (t.verdict.status !== 'approved') throw new VaultError('TASK_NOT_APPROVED', 'Task not approved; no card issued.')
+    if (t.cardId) throw new VaultError('ALREADY_MINTED', 'A card was already issued for this task.')
+    const acct = this.s.member.accounts.find(a => a.id === SESSION_FUNDING_ACCOUNT)!
+    if (t.req.budgetCents > acct.balanceCents) throw new VaultError('INSUFFICIENT_FUNDS', 'Not enough funds to back this card.')
+
+    acct.balanceCents -= t.req.budgetCents
+    const exp = new Date(this.now() + 365 * 24 * 3600 * 1000)
+    const card: Card = {
+      id: `vc_${++this.s.seq}`,
+      taskId,
+      status: 'OPEN',
+      pan: luhnPan(),
+      cvv: String(randomInt(100, 1000)),
+      expiry: `${pad(exp.getUTCMonth() + 1)}/${pad(exp.getUTCFullYear() % 100)}`,
+      allowedCategories: [...t.req.categories],
+      maxTotalCents: t.req.budgetCents,
+      expiresAt: new Date(this.now() + this.rules.cardTtlMs).toISOString(),
+      heldCents: t.req.budgetCents,
+      spentCents: 0,
+      attempts: 0,
+    }
+    t.cardId = card.id
+    this.s.cards.push(card)
+    this.log('vault', 'card_minted', `Minted virtual card ••${card.pan.slice(-4)} with ${dollars(card.maxTotalCents)} fake money. Real account never shared.`, card.id)
+    return this.view(card)
+  }
+
+  async submitCart(cardId: string, items: CartItem[]): Promise<CartVerdict> {
+    const c = this.card(cardId)
     this.assertOpen(c)
     c.attempts += 1
-    this.log('shopping_agent', 'cart_submitted', `Cart #${c.attempts}: ${cart.items.map(i => `${i.qty}x ${i.name}`).join(', ')}`, id)
-    const review = agentB(c.task, c.rules, cart, c.attempts)
-    c.lastReview = review
-    c.approvedCart = review.approved ? cart : undefined
-    this.log('agent_b', review.approved ? 'cart_approved' : 'cart_rejected', review.message, id, {
-      rejections: review.rejections,
-    })
-    return review
+    const attempt = c.attempts
+    this.log('shopping_agent', 'cart_submitted', `Cart #${attempt}: ${items.map(i => `${i.qty}x ${i.name}`).join(', ')}`, cardId)
+    const task = this.task(c.taskId)
+    const verdict = await agentB(task.req.task, { allowedCategories: c.allowedCategories, maxTotalCents: c.maxTotalCents }, items, attempt, cardId, this.jev)
+    // the card may have changed while Agent B was thinking; re-check before recording
+    this.assertOpen(c)
+    c.last = { verdict, items }
+    this.log('agent_b', verdict.status === 'approved' ? 'cart_approved' : 'cart_rejected', verdict.feedback, cardId)
+    return structuredClone(verdict)
   }
 
-  checkout(id: string): Receipt {
-    const c = this.card(id)
+  checkout(cardId: string): Receipt {
+    const c = this.card(cardId)
     this.assertOpen(c)
-    if (!c.approvedCart || !c.lastReview?.approved) {
+    if (!c.last || c.last.verdict.status !== 'approved') {
       throw new VaultError('CART_NOT_APPROVED', 'Agent B has not approved the whole cart; no purchase made.')
     }
-    const cart = c.approvedCart
-    const total = c.lastReview.totalCents
-    const res = this.authorize(c, cart.merchant, total, null, true)
-    if (!res.approved) throw new VaultError(res.code, res.reason)
-    this.log('vault', 'checkout', `Bought ${dollars(total)} at ${cart.merchant}.`, id)
-    const refunded = this.close(c, 'Purchase complete')
-    return { cardId: id, merchant: cart.merchant, totalCents: total, items: cart.items, refundedToAccountCents: refunded }
+    const { items, verdict } = c.last
+    const res = this.authorize(c, verdict.totalCents, null, true)
+    if (!res.approved) throw new VaultError(res.code, res.message)
+    this.log('vault', 'checkout', `Bought ${dollars(verdict.totalCents)} at ${items[0]?.merchant ?? 'merchant'}.`, cardId)
+    this.close(c, 'Purchase complete')
+    return { cardId, chargedCents: verdict.totalCents, items: structuredClone(items), cardStatus: 'CLOSED', closedAt: new Date(this.now()).toISOString() }
   }
 
-  /** Raw network authorization; used by the off-task / "try to spend again" demo (D3 hard block). */
-  charge(id: string, merchant: string, category: Category, amountCents: number): ChargeResult {
-    const c = this.card(id)
-    const res = this.authorize(c, merchant, amountCents, category)
+  /** Network authorization simulator (D3 hard block; D10: no spend while shopping). */
+  attemptCharge(cardId: string, merchant: string, category: Category, amountCents: number): ChargeResult {
+    const c = this.card(cardId)
+    const res = this.authorize(c, amountCents, category, false, merchant)
     this.log('network', res.approved ? 'charge_approved' : 'charge_declined',
-      res.approved ? `${dollars(amountCents)} at ${merchant} approved` : `${dollars(amountCents)} at ${merchant} DECLINED: ${res.reason}`,
-      id, res.approved ? undefined : { code: res.code })
+      `${dollars(amountCents)} at ${merchant} ${res.approved ? 'approved' : `DECLINED: ${res.message}`}`, cardId)
     return res
-  }
-
-  // ---------- member/vault-facing ----------
-
-  resolveOverride(id: string, approve: boolean) {
-    const c = this.card(id)
-    if (c.status !== 'PENDING_OVERRIDE') throw new VaultError('NOT_PENDING', `Card is ${c.status}, not awaiting override.`)
-    this.log('member', approve ? 'override_approved' : 'override_rejected', `Member ${approve ? 'approved' : 'rejected'} the request.`, id)
-    if (!approve) {
-      c.status = 'DENIED'
-      c.deniedReasons = ['Member rejected the request.']
-    } else if (c.rules.budgetCents > this.member.realAccount.balanceCents) {
-      c.status = 'DENIED'
-      c.deniedReasons = ['Insufficient funds in member account.']
-      this.log('vault', 'mint_failed', 'Insufficient funds; card not minted.', id)
-    } else {
-      this.mint(c)
-    }
-    return this.agentView(id)
-  }
-
-  vaultView() {
-    const a = this.member.realAccount
-    return {
-      member: { name: this.member.name, accountLast4: a.accountNumber.slice(-4), balanceCents: a.balanceCents },
-      historyCount: this.member.history.length,
-      cards: [...this.cards.values()].map(c => ({
-        ...this.agentView(c.id), detail: c.deniedReasons ?? c.override?.reasons ?? [],
-        heldCents: c.heldCents, pendingOverride: c.status === 'PENDING_OVERRIDE',
-      })),
-    }
-  }
-
-  eventsSince(seq = 0) {
-    return this.events.filter(e => e.seq > seq)
   }
 
   // ---------- internals ----------
 
-  private mint(c: Card) {
-    const acct = this.member.realAccount
-    if (c.rules.budgetCents > acct.balanceCents) {
-      c.status = 'DENIED'
-      c.deniedReasons = ['Insufficient funds in member account.']
-      this.log('vault', 'mint_failed', 'Insufficient funds; card not minted.', c.id)
-      return
-    }
-    c.rules.expiresAt = new Date(this.now() + this.rules.cardTtlMs).toISOString()
-    acct.balanceCents -= c.rules.budgetCents
-    c.heldCents = c.rules.budgetCents
-    c.pan = luhnPan()
-    c.cvv = String(randomInt(100, 1000))
-    const exp = new Date(this.now() + 365 * 24 * 3600 * 1000)
-    c.expMonth = exp.getUTCMonth() + 1
-    c.expYear = exp.getUTCFullYear()
-    c.status = 'OPEN'
-    this.log('vault', 'card_minted', `Minted virtual card ••${c.pan.slice(-4)} with ${dollars(c.rules.budgetCents)} fake money. Real account never shared.`, c.id)
-  }
-
-  private authorize(c: Card, merchant: string, amountCents: number, category: Category | null, viaCheckout = false): ChargeResult {
-    const decline = (code: string, reason: string): ChargeResult => ({ approved: false, code, reason })
-    if (c.status !== 'OPEN') return decline('CARD_CLOSED', `Card is ${c.status}.`)
-    if (this.now() > Date.parse(c.rules.expiresAt)) { this.close(c, 'Expired'); return decline('CARD_EXPIRED', 'Card expired.') }
-    if (!Number.isInteger(amountCents) || amountCents < 1) return decline('BAD_AMOUNT', 'Invalid amount.')
-    if (category && !c.rules.allowedCategories.includes(category)) {
-      return decline('OFF_TASK', `Category "${category}" is not allowed on this card.`)
-    }
-    if (c.spentCents + amountCents > c.rules.budgetCents) return decline('OVER_BUDGET', 'Exceeds card balance.')
-    // D10: no spend while shopping; only the approved cart (via checkout) may move money.
-    if (!viaCheckout) return decline('CART_NOT_APPROVED', 'No spend until Agent B approves the whole cart.')
+  private authorize(c: Card, amountCents: number, category: Category | null, viaCheckout: boolean, merchant = 'merchant'): ChargeResult {
+    const no = (code: ChargeResult['code'], message: string): ChargeResult => ({ approved: false, code, message })
+    if (c.status !== 'OPEN') return no('CARD_CLOSED', `Declined at ${merchant}: card is closed.`)
+    if (this.now() > Date.parse(c.expiresAt)) { this.close(c, 'Expired'); return no('CARD_EXPIRED', `Declined at ${merchant}: card expired.`) }
+    if (!Number.isInteger(amountCents) || amountCents < 1) return no('BAD_AMOUNT', `Declined at ${merchant}: invalid amount.`)
+    if (category && !c.allowedCategories.includes(category)) return no('OFF_TASK_BLOCKED', `Blocked at ${merchant}: off-task spend.`)
+    if (c.spentCents + amountCents > c.maxTotalCents) return no('OVER_LIMIT', `Declined at ${merchant}: over limit.`)
+    if (!viaCheckout) return no('CART_NOT_APPROVED', `Declined at ${merchant}: no spend until Agent B approves the whole cart.`)
     c.spentCents += amountCents
-    return { approved: true, remainingCents: c.rules.budgetCents - c.spentCents }
+    return { approved: true, code: 'APPROVED', message: 'Approved.' }
   }
 
-  private close(c: Card, why: string): number {
+  private close(c: Card, why: string) {
     const refund = c.heldCents - c.spentCents
-    this.member.realAccount.balanceCents += refund
+    this.s.member.accounts.find(a => a.id === SESSION_FUNDING_ACCOUNT)!.balanceCents += refund
     c.heldCents = 0
     c.status = 'CLOSED'
     this.log('vault', 'card_closed', `${why}; card closed, ${dollars(refund)} released.`, c.id)
-    return refund
   }
 
   private assertOpen(c: Card) {
-    if (c.status !== 'OPEN') throw new VaultError('CARD_NOT_OPEN', `Card is ${c.status}.`)
-    if (this.now() > Date.parse(c.rules.expiresAt)) {
+    if (c.status !== 'OPEN') throw new VaultError('CARD_NOT_OPEN', 'Card is closed.')
+    if (this.now() > Date.parse(c.expiresAt)) {
       this.close(c, 'Expired')
       throw new VaultError('CARD_EXPIRED', 'Card expired.')
     }
   }
 
-  /** Agent-visible reasons are generic: never member history, caps or balance. */
-  private agentReasons(c: Card): string[] {
-    if (c.status === 'PENDING_OVERRIDE') return ['Requires member approval.']
-    if (c.status !== 'DENIED') return []
-    if (c.deniedReasons?.some(r => /^(Restricted|No spend)/.test(r))) return c.deniedReasons.filter(r => /^(Restricted|No spend)/.test(r))
-    return ['Request was not approved.']
+  private view(c: Card): VirtualCard {
+    return {
+      cardId: c.id, taskId: c.taskId, pan: c.pan, expiry: c.expiry, cvv: c.cvv, status: c.status,
+      limitCents: c.maxTotalCents,
+      balanceCents: c.status === 'OPEN' ? c.maxTotalCents - c.spentCents : 0,
+      rules: { allowedCategories: [...c.allowedCategories], maxTotalCents: c.maxTotalCents, singleUse: true, expiresAt: c.expiresAt },
+    }
+  }
+
+  private task(id: string): Task {
+    const t = this.s.tasks.find(x => x.id === id)
+    if (!t) throw new VaultError('NOT_FOUND', `No task ${id}.`, 404)
+    return t
   }
 
   private card(id: string): Card {
-    const c = this.cards.get(id)
+    const c = this.s.cards.find(x => x.id === id)
     if (!c) throw new VaultError('NOT_FOUND', `No card ${id}.`, 404)
     return c
   }
 
-  private log(actor: Actor, type: string, summary: string, cardId?: string, data?: Record<string, unknown>) {
-    this.events.push({ seq: this.events.length + 1, ts: new Date(this.now()).toISOString(), actor, type, summary, cardId, data })
+  private log(actor: Actor, type: string, summary: string, ref?: string) {
+    this.s.events.push({ seq: this.s.events.length + 1, ts: new Date(this.now()).toISOString(), actor, type, summary, ref })
   }
 }

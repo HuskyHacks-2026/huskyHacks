@@ -1,8 +1,12 @@
-export type Category =
-  | 'groceries' | 'household' | 'clothing' | 'electronics' | 'entertainment'
-  | 'travel' | 'luxury' | 'gambling' | 'crypto' | 'gift_cards'
+// The wire contract is owned by the frontend (web/src/api/types.ts); import it so both sides can't drift.
+import type { Category } from '../../web/src/api/types'
+export type { Category }
+export type {
+  Cents, MemberSummary, TaskRequest, Check, TaskVerdict, VirtualCard, CartItem, LineVerdict, CartVerdict,
+  Receipt, ChargeResult, VaultApi,
+} from '../../web/src/api/types'
 
-export const RESTRICTED: readonly Category[] = ['gambling', 'crypto', 'gift_cards']
+export const RESTRICTED: readonly Category[] = ['gambling', 'crypto', 'gift_card']
 
 export interface Txn {
   id: string
@@ -14,73 +18,18 @@ export interface Txn {
 
 /** Secret side of the vault. Must never appear in any agent-facing response. */
 export interface Member {
-  id: string
-  name: string
-  realAccount: { accountNumber: string; routingNumber: string; balanceCents: number }
+  firstName: string
+  memberId: string
+  accounts: { id: string; name: string; number: string; routing: string; balanceCents: number }[]
   history: Txn[]
 }
 
 export interface DefaultRuleset {
   perTaskCapCents: number
-  allowedCategories: Category[]
-  thinHistoryThreshold: number
   historyCapMultiplier: number
   cardTtlMs: number
-}
-
-export interface CardRules {
-  budgetCents: number
-  allowedCategories: Category[]
-  expiresAt: string
-}
-
-export type CardStatus = 'PENDING_OVERRIDE' | 'OPEN' | 'CLOSED' | 'DENIED'
-
-export interface CartItem {
-  name: string
-  qty: number
-  unitPriceCents: number
-  /** Label supplied by the shopping agent; untrusted. Agent B classifies by name itself. */
-  category?: string
-}
-
-export interface Cart {
-  merchant: string
-  items: CartItem[]
-}
-
-export interface CartRejection {
-  index: number
-  name: string
-  reason: string
-}
-
-export interface CartReview {
-  approved: boolean
-  attempt: number
-  totalCents: number
-  rejections: CartRejection[]
-  message: string
-}
-
-export interface Receipt {
-  cardId: string
-  merchant: string
-  totalCents: number
-  items: CartItem[]
-  refundedToAccountCents: number
-}
-
-export type Actor = 'member' | 'shopping_agent' | 'agent_a' | 'agent_b' | 'vault' | 'network'
-
-export interface VaultEvent {
-  seq: number
-  ts: string
-  actor: Actor
-  type: string
-  summary: string
-  cardId?: string
-  data?: Record<string, unknown>
+  /** Jev "makes sense for this member" below this flags the request for member override. */
+  makesSenseMin: number
 }
 
 export const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`
