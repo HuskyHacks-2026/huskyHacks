@@ -4,12 +4,18 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>
 
 export type Surface = 'agent' | 'member'
 
+/** Header the member dashboard sends; the shopping agent must never receive or send it. */
+export const MEMBER_HEADER = 'x-member-token'
+export const DEFAULT_MEMBER_TOKEN = process.env.VAULT_MEMBER_TOKEN ?? 'demo-member-token'
+
 /** One HTTP round trip, kept so the demo can prove what each side was ever shown. */
 export interface Exchange {
   surface: Surface
   method: string
   path: string
   reqBody?: unknown
+  /** Headers WE sent. Used to prove the agent surface never carries the member token. */
+  reqHeaders: Record<string, string>
   status: number
   text: string
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -23,18 +29,25 @@ export interface Exchange {
 export class VaultClient {
   readonly exchanges: Exchange[] = []
 
-  constructor(readonly base: string, private readonly fetchImpl: FetchLike) {}
+  constructor(
+    readonly base: string,
+    private readonly fetchImpl: FetchLike,
+    readonly memberToken: string = DEFAULT_MEMBER_TOKEN,
+  ) {}
 
   private async call(surface: Surface, method: string, path: string, body?: unknown): Promise<Exchange> {
+    const headers: Record<string, string> = { 'content-type': 'application/json' }
+    // Member token only on the member surface. Agent calls must never carry it (S3 / D8).
+    if (surface === 'member') headers[MEMBER_HEADER] = this.memberToken
     const res = await this.fetchImpl(this.base + path, {
       method,
-      headers: { 'content-type': 'application/json' },
+      headers,
       body: body === undefined ? undefined : JSON.stringify(body),
     })
     const text = await res.text()
     let json: unknown = null
     try { json = text ? JSON.parse(text) : null } catch { json = null }
-    const ex: Exchange = { surface, method, path, reqBody: body, status: res.status, text, json }
+    const ex: Exchange = { surface, method, path, reqBody: body, reqHeaders: headers, status: res.status, text, json }
     this.exchanges.push(ex)
     return ex
   }

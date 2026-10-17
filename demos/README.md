@@ -1,12 +1,17 @@
 # Agent Alias Vault — demos & test cases
 
-Demo / test lane for HuskyHack 2026. Contains the **locked scenarios** (groceries, Mexico vacation, off-task carts, prompt injection, stolen card, suspicious boat, casino) and runs them end-to-end against the real backend. It does **not** modify `backend/` or the frontend; it consumes their HTTP API.
+Independent demo / test package for HuskyHack 2026. Locked scenarios (groceries, Mexico vacation, off-task carts, prompt injection, stolen card, suspicious boat, casino) run end-to-end against the real backend. Does **not** modify `backend/` or `web/`; consumes their HTTP API.
 
-- [`test-cases.md`](./test-cases.md) — the locked scenarios, expected outcomes, what the screen must show, judge click path.
-- [`src/scenarios.ts`](./src/scenarios.ts) — the same scenarios as executable step lists.
-- [`src/runner.ts`](./src/runner.ts) — runs a scenario, records a check per expectation, scans every agent-facing response for real-account data.
-- [`src/run.ts`](./src/run.ts) — narrated terminal demo.
-- [`test/`](./test) — vitest suites (scenarios + new-member default ruleset).
+**Agents working on backend or frontend:** start with [`AGENT_WIRING.md`](./AGENT_WIRING.md) — contracts, step kinds, how to wire UI/bots, ownership boundaries.
+
+| Doc | Purpose |
+| --- | --- |
+| [`AGENT_WIRING.md`](./AGENT_WIRING.md) | How other agents use and wire these cases into backend/web |
+| [`test-cases.md`](./test-cases.md) | Locked scenarios, expected outcomes, screen checklist, judge path |
+| [`src/scenarios.ts`](./src/scenarios.ts) | Same scenarios as executable step lists |
+| [`src/runner.ts`](./src/runner.ts) | Runner + leak scan |
+| [`src/run.ts`](./src/run.ts) | Narrated terminal demo |
+| [`test/`](./test) | Vitest suites |
 
 ## Run
 

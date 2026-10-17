@@ -60,4 +60,4 @@ Each step below is emitted by the runner with an actor tag; the UI needs an equi
 
 - Agent B's keyword catalog has no words for common trip add-ons (`tour`, `excursion`, `resort`, `travel insurance`, `airport transfer`). They currently fail closed as "unrecognized". Fine for the locked carts; worth adding before any live-bot demo.
 - `/charge` takes the category from the request; the README already notes that in reality it would come from the merchant MCC. Say so on stage if asked.
-- Member-side endpoints (`/api/vault`, override, reset, events) are unauthenticated on the demo server; don't expose it publicly.
+- Member-side endpoints (`/api/vault`, override, reset, events) require header `x-member-token: demo-member-token` (the agent never gets it). Still a demo secret — don't expose the server publicly.

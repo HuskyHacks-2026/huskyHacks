@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { demoMember } from '../../backend/src/data'
+import { MEMBER_HEADER } from '../src/client'
 import { runScenario } from '../src/runner'
 import { CART_TOTALS, SCENARIOS } from '../src/scenarios'
 import { DEMO_MEMBER_SECRETS } from '../src/secrets'
@@ -41,5 +42,18 @@ describe('leak-scan secrets mirror the backend demo member', () => {
       routingNumber: m.realAccount.routingNumber,
       openingBalanceCents: m.realAccount.balanceCents,
     })
+  })
+})
+
+describe('member token stays off the agent surface', () => {
+  it('agent calls never send x-member-token; member calls always do', async () => {
+    const client = await freshClient()
+    const result = await runScenario(SCENARIOS.find(s => s.id === 'mexico-vacation')!, client)
+    expect(result.failures).toEqual([])
+    for (const ex of client.exchanges) {
+      const sent = MEMBER_HEADER in ex.reqHeaders
+      if (ex.surface === 'agent') expect(sent).toBe(false)
+      else expect(sent).toBe(true)
+    }
   })
 })
