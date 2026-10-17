@@ -3,65 +3,102 @@ import { agentA } from '../src/agentA'
 import { agentB } from '../src/agentB'
 import { classifyItem } from '../src/catalog'
 import { DEFAULT_RULESET, demoMember } from '../src/data'
-import type { CardRules } from '../src/types'
+import type { Jev } from '../src/jev'
+import type { CartItem, TaskRequest } from '../src/types'
+import { SCENARIOS } from '../src/scenarios'
 
-const req = (over = {}) => ({ task: 'buy groceries', budgetCents: 8000, allowedCategories: ['groceries' as const], ...over })
+const req = (o: Partial<TaskRequest> = {}): TaskRequest => ({ agentName: 'Perp', task: 'Weekly groceries', budgetCents: 8000, categories: ['grocery'], ...o })
+const A = (r: TaskRequest, jev?: Jev) => agentA('t1', demoMember(), r, DEFAULT_RULESET, jev)
 
 describe('Agent A (does this make sense for this member?)', () => {
-  it('approves a normal grocery budget', () => {
-    expect(agentA(demoMember(), req(), DEFAULT_RULESET).decision).toBe('approve')
+  it('approves a normal grocery budget and shows its checks', async () => {
+    const v = await A(req())
+    expect(v.status).toBe('approved')
+    expect(v.checks.every(c => c.pass)).toBe(true)
   })
-  it('sends a $100k boat to member override, not deny', () => {
-    const r = agentA(demoMember(), req({ budgetCents: 10_000_000, allowedCategories: ['luxury'] }), DEFAULT_RULESET)
-    expect(r.decision).toBe('needs_override')
+  it('sends the $100k boat to member override, not deny', async () => {
+    const v = await A(req({ task: 'Purchase boat', budgetCents: 10_000_000, categories: ['marine'] }))
+    expect(v.status).toBe('needs_override')
+    expect(v.checks.filter(c => !c.pass).map(c => c.id)).toEqual(expect.arrayContaining(['categories', 'cap', 'norms']))
   })
-  it('denies restricted categories outright', () => {
-    for (const c of ['gambling', 'crypto', 'gift_cards'] as const) {
-      expect(agentA(demoMember(), req({ allowedCategories: [c] }), DEFAULT_RULESET).decision).toBe('deny')
-    }
+  it('denies restricted categories outright', async () => {
+    for (const c of ['gambling', 'crypto', 'gift_card'] as const) expect((await A(req({ categories: [c] }))).status).toBe('denied')
   })
-  it('denies empty category list', () => {
-    expect(agentA(demoMember(), req({ allowedCategories: [] }), DEFAULT_RULESET).decision).toBe('deny')
+  it('denies an empty category list', async () => {
+    expect((await A(req({ categories: [] }))).status).toBe('denied')
   })
-  it('flags a category the member has never bought (history-based pattern)', () => {
-    expect(agentA(demoMember(), req({ allowedCategories: ['travel'] }), DEFAULT_RULESET).decision).toBe('needs_override')
+  it('flags a category the member has never bought', async () => {
+    expect((await A(req({ categories: ['electronics'], budgetCents: 5000 }))).status).toBe('needs_override')
   })
-  it('thin history falls back to the default ruleset cap; rich history raises it', () => {
-    const thin = demoMember(); thin.history = thin.history.slice(0, 2)
-    expect(agentA(thin, req({ budgetCents: 30_000 }), DEFAULT_RULESET).decision).toBe('needs_override') // > $200 default
-    expect(agentA(demoMember(), req({ budgetCents: 30_000 }), DEFAULT_RULESET).decision).toBe('approve') // 3x max txn
+  it('does not leak member history numbers in verdict text', async () => {
+    const v = JSON.stringify(await A(req({ budgetCents: 10_000_000, categories: ['marine'] })))
+    expect(v).not.toMatch(/114\.40|11440|largest/i)
+  })
+  it('Jev can only escalate: low plausibility flags an otherwise-clean request', async () => {
+    const low: Jev = { classify: async () => [], makesSense: async () => 0.05 }
+    const v = await A(req(), low)
+    expect(v.status).toBe('needs_override')
+    expect(v.checks.find(c => c.id === 'makes_sense')?.pass).toBe(false)
+  })
+  it('Jev saying "sensible" never rescues a rules failure, and null Jev changes nothing', async () => {
+    const high: Jev = { classify: async () => [], makesSense: async () => 0.99 }
+    expect((await A(req({ budgetCents: 10_000_000, categories: ['marine'] }), high)).status).toBe('needs_override')
+    expect((await A(req({ categories: ['gift_card'] }), high)).status).toBe('denied')
+    const nul: Jev = { classify: async () => [], makesSense: async () => null }
+    expect((await A(req(), nul)).status).toBe('approved')
   })
 })
 
-const rules: CardRules = { budgetCents: 8000, allowedCategories: ['groceries'], expiresAt: '2099-01-01T00:00:00Z' }
-const item = (name: string, price = 500, qty = 1, category?: string) => ({ name, qty, unitPriceCents: price, category })
+const limits = { allowedCategories: ['grocery' as const], maxTotalCents: 8000 }
+let n = 0
+const item = (name: string, priceCents = 500, qty = 1, category: CartItem['category'] = 'grocery'): CartItem =>
+  ({ id: `i${++n}`, name, merchant: 'QFC', category, priceCents, qty })
+const B = (items: CartItem[], jev?: Jev) => agentB('Weekly groceries', limits, items, 1, 'vc_1', jev)
 
 describe('Agent B (whole cart vs task + budget)', () => {
-  it('approves an all-groceries cart under budget', () => {
-    const r = agentB('buy groceries', rules, { merchant: 'QFC', items: [item('Whole milk'), item('Eggs dozen', 599, 2)] }, 1)
-    expect(r.approved).toBe(true)
-    expect(r.totalCents).toBe(500 + 1198)
+  it('approves the frontend scenarios\' clean grocery cart', async () => {
+    const clean = SCENARIOS.find(s => s.id === 'groceries')!.carts.at(-1)!
+    const v = await B(clean)
+    expect(v.status).toBe('approved')
   })
-  it('rejects the WHOLE cart when one line is off-task and names the line', () => {
-    const r = agentB('buy groceries', rules, { merchant: 'QFC', items: [item('Whole milk'), item('55-inch Smart TV', 39999)] }, 1)
-    expect(r.approved).toBe(false)
-    expect(r.rejections.map(x => x.name)).toContain('55-inch Smart TV')
-    expect(r.message).toMatch(/55-inch Smart TV/)
+  it('rejects the frontend\'s injected cart (TV + gift card), naming both lines', async () => {
+    const bad = SCENARIOS.find(s => s.id === 'groceries')!.carts[0]!
+    const v = await B(bad)
+    expect(v.status).toBe('rejected')
+    expect(v.lines.filter(l => !l.ok).map(l => l.itemId)).toEqual(['x1', 'x2'])
+    expect(v.feedback).toMatch(/Remove: .*TV.*gift card/i)
   })
-  it('does not trust the agent-supplied category label', () => {
-    const r = agentB('buy groceries', rules, { merchant: 'QFC', items: [item('Movie tickets x4', 6000, 1, 'groceries')] }, 1)
-    expect(r.approved).toBe(false)
+  it('does not trust the agent-supplied category label', async () => {
+    expect((await B([item('Movie tickets x4', 6000, 1, 'grocery')])).status).toBe('rejected')
   })
-  it('fails closed on unrecognized items and ambiguous multi-category names', () => {
-    expect(agentB('t', rules, { merchant: 'x', items: [item('Zorblax 9000')] }, 1).approved).toBe(false)
-    expect(classifyItem('Apple iPhone phone case').sort()).toEqual(['electronics', 'groceries'])
-    expect(agentB('t', rules, { merchant: 'x', items: [item('Apple iPhone')] }, 1).approved).toBe(false)
+  it('fails closed on unrecognized items and on multi-category ambiguity', async () => {
+    expect((await B([item('Zorblax 9000')])).status).toBe('rejected')
+    expect(classifyItem('Apple iPhone').sort()).toEqual(['electronics', 'grocery'])
+    expect((await B([item('Apple iPhone')])).status).toBe('rejected')
   })
-  it('rejects over-budget, empty, and invalid qty/price carts', () => {
-    expect(agentB('t', rules, { merchant: 'x', items: [item('Whole milk', 9000)] }, 1).approved).toBe(false)
-    expect(agentB('t', rules, { merchant: 'x', items: [] }, 1).approved).toBe(false)
-    expect(agentB('t', rules, { merchant: 'x', items: [item('Whole milk', 500, 0)] }, 1).approved).toBe(false)
-    expect(agentB('t', rules, { merchant: 'x', items: [item('Whole milk', -5)] }, 1).approved).toBe(false)
-    expect(agentB('t', rules, { merchant: 'x', items: [item('Whole milk', 1.5)] }, 1).approved).toBe(false)
+  it('rejects over-budget, empty, and invalid qty/price carts', async () => {
+    expect((await B([item('Whole milk', 9000)])).status).toBe('rejected')
+    expect((await B([])).status).toBe('rejected')
+    expect((await B([item('Whole milk', 500, 0)])).status).toBe('rejected')
+    expect((await B([item('Whole milk', -5)])).status).toBe('rejected')
+    expect((await B([item('Whole milk', 1.5)])).status).toBe('rejected')
+  })
+
+  describe('with Jev', () => {
+    const jevSays = (p: Record<string, number> | null): Jev => ({ classify: async (_t, it) => it.map(() => p), makesSense: async () => null })
+    it('recognizes a confident allowed item keywords don\'t know', async () => {
+      expect((await B([item('Zorblax 9000')], jevSays({ grocery: 0.9, other: 0.1 }))).status).toBe('approved')
+    })
+    it('rejects when Jev puts real mass on a disallowed category, even if keywords say grocery', async () => {
+      expect((await B([item('Whole milk')], jevSays({ grocery: 0.6, gift_card: 0.4 }))).status).toBe('rejected')
+    })
+    it('"other" or unsure Jev does not rescue an unknown item', async () => {
+      expect((await B([item('Zorblax 9000')], jevSays({ other: 0.9, grocery: 0.1 }))).status).toBe('rejected')
+      expect((await B([item('Zorblax 9000')], jevSays({ grocery: 0.5, other: 0.5 }))).status).toBe('rejected')
+    })
+    it('falls back to keywords when Jev is unavailable', async () => {
+      expect((await B([item('Whole milk')], jevSays(null))).status).toBe('approved')
+      expect((await B([item('Samsung TV', 500, 1, 'electronics')], jevSays(null))).status).toBe('rejected')
+    })
   })
 })

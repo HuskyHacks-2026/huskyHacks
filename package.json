@@ -1,0 +1,14 @@
+{
+  "name": "agent-pay-vercel",
+  "private": true,
+  "description": "Root manifest for the Vercel deploy: installs the API function's deps and builds web/.",
+  "scripts": {
+    "build": "npm install --prefix web && npm run build --prefix web"
+  },
+  "dependencies": {
+    "@hono/node-server": "^1.13.0",
+    "hono": "^4.6.0",
+    "zod": "^3.23.0"
+  },
+  "engines": { "node": ">=20" }
+}

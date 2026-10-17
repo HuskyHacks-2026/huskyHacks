@@ -1,32 +1,31 @@
-import type { DefaultRuleset, Member, Txn } from './types'
+import type { DefaultRuleset, Member } from './types'
 
-const t = (id: number, merchant: string, category: Txn['category'], amountCents: number, date: string): Txn =>
-  ({ id: `t${id}`, merchant, category, amountCents, date })
+export const SESSION_FUNDING_ACCOUNT = 'chk'
 
 export function demoMember(): Member {
   return {
-    id: 'm_alex',
-    name: 'Alex Rivera',
-    realAccount: { accountNumber: '8675309214', routingNumber: '325081403', balanceCents: 482055 },
+    firstName: 'Jordan',
+    memberId: 'SCU-0042-118',
+    accounts: [
+      { id: 'chk', name: 'Everyday Checking', number: '7700384821', routing: '325081403', balanceCents: 421256 },
+      { id: 'sav', name: 'Membership Savings', number: '7700380093', routing: '325081403', balanceCents: 1287410 },
+    ],
     history: [
-      t(1, 'QFC', 'groceries', 6420, '2026-09-02'),
-      t(2, 'Safeway', 'groceries', 8815, '2026-09-09'),
-      t(3, 'Trader Joes', 'groceries', 5290, '2026-09-16'),
-      t(4, 'QFC', 'groceries', 7140, '2026-09-23'),
-      t(5, 'Target', 'household', 3875, '2026-09-25'),
-      t(6, 'Safeway', 'groceries', 9430, '2026-09-30'),
-      t(7, 'Best Buy', 'electronics', 12900, '2026-10-03'),
-      t(8, 'AMC', 'entertainment', 2850, '2026-10-05'),
-      t(9, 'QFC', 'groceries', 6755, '2026-10-07'),
-      t(10, 'Target', 'clothing', 4599, '2026-10-10'),
+      { id: 't1', merchant: 'PCC Community Markets', category: 'grocery', amountCents: 8734, date: '2026-10-14' },
+      { id: 't2', merchant: 'Shell', category: 'gas', amountCents: 5210, date: '2026-10-13' },
+      { id: 't3', merchant: 'QFC', category: 'grocery', amountCents: 6122, date: '2026-10-10' },
+      { id: 't4', merchant: 'Seattle City Light', category: 'utilities', amountCents: 11440, date: '2026-10-08' },
+      { id: 't5', merchant: 'Pho Bac', category: 'dining', amountCents: 3418, date: '2026-10-06' },
+      { id: 't6', merchant: 'Safeway', category: 'grocery', amountCents: 10255, date: '2026-10-03' },
+      { id: 't7', merchant: 'Walgreens', category: 'pharmacy', amountCents: 2399, date: '2026-09-29' },
     ],
   }
 }
 
+/** Default ruleset (PRD D5). Static for the demo. */
 export const DEFAULT_RULESET: DefaultRuleset = {
-  perTaskCapCents: 20000,
-  allowedCategories: ['groceries', 'household', 'clothing', 'electronics', 'entertainment'],
-  thinHistoryThreshold: 5,
+  perTaskCapCents: 50000,
   historyCapMultiplier: 3,
   cardTtlMs: 30 * 60 * 1000,
+  makesSenseMin: 0.3,
 }

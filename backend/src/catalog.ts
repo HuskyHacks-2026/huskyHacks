@@ -1,19 +1,24 @@
 import type { Category } from './types'
 
-// Agent B's own item classifier. The shopping agent's category label is never trusted.
+// Deterministic fallback classifier. The shopping agent's own category label is never trusted.
 const KEYWORDS: Record<Category, string[]> = {
-  groceries: ['milk', 'eggs', 'bread', 'butter', 'cheese', 'apple', 'banana', 'orange', 'rice', 'pasta', 'chicken',
-    'beef', 'salmon', 'tofu', 'spinach', 'lettuce', 'tomato', 'potato', 'onion', 'cereal', 'yogurt', 'coffee',
+  grocery: ['milk', 'eggs', 'bread', 'loaf', 'butter', 'cheese', 'apple', 'banana', 'orange', 'rice', 'pasta', 'chicken',
+    'thigh', 'beef', 'salmon', 'tofu', 'spinach', 'lettuce', 'tomato', 'potato', 'onion', 'cereal', 'yogurt', 'coffee',
     'tea', 'flour', 'sugar', 'olive oil', 'beans', 'carrot', 'grapes', 'berries', 'juice', 'produce', 'grocer'],
+  dining: ['restaurant', 'pizza', 'burger', 'takeout', 'sushi', 'doordash'],
+  gas: ['gasoline', 'unleaded', 'diesel', 'fuel'],
+  utilities: ['electric bill', 'water bill', 'internet bill', 'utility'],
+  pharmacy: ['ibuprofen', 'vitamins', 'prescription', 'bandages', 'aspirin'],
   household: ['paper towel', 'detergent', 'dish soap', 'sponge', 'trash bag', 'toilet paper', 'light bulb', 'batteries'],
   clothing: ['shirt', 'jacket', 'jeans', 'shoes', 'socks', 'hoodie'],
   electronics: ['tv', 'television', 'laptop', 'phone', 'headphones', 'tablet', 'console', 'monitor', 'camera', 'speaker'],
   entertainment: ['movie', 'cinema', 'netflix', 'concert', 'game pass', 'streaming', 'tickets'],
   travel: ['flight', 'hotel', 'airbnb', 'rental car'],
-  luxury: ['boat', 'yacht', 'watch', 'jewelry', 'handbag'],
+  marine: ['boat', 'yacht', 'bayliner', 'outboard', 'kayak', 'marina'],
+  luxury: ['watch', 'jewelry', 'handbag'],
   gambling: ['casino', 'poker', 'sportsbook', 'bet', 'lottery'],
   crypto: ['bitcoin', 'ethereum', 'crypto', 'token'],
-  gift_cards: ['gift card', 'giftcard', 'prepaid card'],
+  gift_card: ['gift card', 'giftcard', 'prepaid card', 'steam card'],
 }
 
 export const ALL_CATEGORIES = Object.keys(KEYWORDS) as Category[]
