@@ -2,7 +2,7 @@ export {}
 // Runs the PRD 13.1 demo against a live server: `npm start` in one shell, `npm run demo` in another.
 const base = process.env.API ?? 'http://localhost:8787'
 const j = async (method: string, path: string, body?: unknown) => {
-  const r = await fetch(base + path, { method, headers: { 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined })
+  const r = await fetch(base + path, { method, headers: { 'content-type': 'application/json', 'x-member-token': process.env.VAULT_MEMBER_TOKEN ?? 'demo-member-token' }, body: body ? JSON.stringify(body) : undefined })
   return { status: r.status, body: await r.json() as any }
 }
 const step = (s: string) => console.log(`\n== ${s}`)
